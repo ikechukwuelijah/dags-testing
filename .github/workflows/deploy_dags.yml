@@ -1,0 +1,23 @@
+name: Deploy Airflow DAGs
+
+on:
+  push:
+    branches:
+      - main  # Trigger when pushing changes to the main branch
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # Use the self-hosted runner (airflow user)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync DAGs to Airflow DAGs folder
+        run: |
+          rsync -avz --delete ./ /home/airflow/dags/
+
+      - name: Restart Airflow services
+        run: |
+          sudo systemctl restart airflow-scheduler
+          sudo systemctl restart airflow-webserver

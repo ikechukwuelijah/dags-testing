@@ -44,7 +44,9 @@ with DAG(
             temperature = weather_data['current']['temp']
             print(f"[{current_time}] Temperature in Manchester: {temperature}°C")
         else:
+            # Log the error and raise an exception to mark the task as failed
             print(f"[{current_time}] Failed to fetch weather data. Status code: {response.status_code}")
+            raise Exception(f"API request failed with status code {response.status_code}")
 
     # Task to call the Python function
     fetch_weather_task = PythonOperator(

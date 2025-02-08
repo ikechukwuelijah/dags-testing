@@ -7,7 +7,6 @@ from airflow.utils.email import send_email
 import pandas as pd
 import requests
 import logging
-import io
 
 # ====================================================
 # 1. AIRFLOW SETUP AND CONFIGURATION

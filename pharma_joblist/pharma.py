@@ -74,7 +74,11 @@ def transform_data(**kwargs):
     try:
         # Pull data from previous task
         ti = kwargs['ti']
-        raw_data = ti.xcom_pull(task_ids='fetch_data', key='raw_data')
+        raw_data = ti.xcom_pull(task_ids='fetch_jobs', key='raw_data')
+        
+        if raw_data is None:
+            raise ValueError("No data received from fetch_data task.")
+        
         # Transformation logic
         if 'response' in raw_data and isinstance(raw_data['response'], list):
             main = []
@@ -84,6 +88,7 @@ def transform_data(**kwargs):
                 elif isinstance(item, dict):
                     main.append(item)
             df = pd.DataFrame(main)
+            
             # Column renaming
             column_map = {
                 'title': 'JobTitle',
@@ -106,34 +111,34 @@ def transform_data(**kwargs):
                 'listedAt': 'PostedDate'
             }
             df.rename(columns=column_map, inplace=True)
+            
             # Data type conversions
             df['PostedDate'] = pd.to_datetime(df['PostedDate'], errors='coerce')
-            # ... [include all your data transformations here]
+            
             # Change specific columns to numeric types for consistency
             columns_to_change = ['CompanyId', 'SalaryInsights', 'NoOfApplicants']
             for col in columns_to_change:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
+            
             # Convert date columns to datetime format for easier analysis
             if 'PostedDate' in df.columns:
                 df['PostedDate'] = pd.to_datetime(df['PostedDate'], errors='coerce')
-            # Convert PostedDate to string before performing any string operations
-            df['PostedDate'] = df['PostedDate'].astype(str)
-            # Now remove the +00:00 part from the timestamp
-            df['PostedDate'] = df['PostedDate'].str.split('+').str[0]  # Remove timezone part
-            # Convert PostedDate back to datetime if needed after removal of +00:00
-            df['PostedDate'] = pd.to_datetime(df['PostedDate'], errors='coerce')
-            # Display column data types after making conversions
-            print('Column data types after conversion:\n', df.dtypes)
+                df['PostedDate'] = df['PostedDate'].astype(str).str.split('+').str[0]
+                df['PostedDate'] = pd.to_datetime(df['PostedDate'], errors='coerce')
+            
             # Drop columns that are unnecessary or redundant
             columns_to_drop = [
                 'CompanyURL1', 'CompanyUniversalName', 
                 'JobFunctions', 'CompanyApplicationUrl', 'JobDescription'
             ]
             df.drop(columns=[col for col in columns_to_drop if col in df.columns], inplace=True)
+            
             # Push transformed data to XCom
             kwargs['ti'].xcom_push(key='transformed_data', value=df.to_json())
             logging.info("Data transformation completed successfully")
+        else:
+            raise ValueError("Unexpected data format received from API.")
     except Exception as e:
         logging.error(f"Transformation failed: {str(e)}")
         raise

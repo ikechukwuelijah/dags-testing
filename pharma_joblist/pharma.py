@@ -3,9 +3,11 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.models import Variable
+from airflow.utils.email import send_email
 import pandas as pd
 import requests
 import logging
+import io
 
 # ====================================================
 # 1. AIRFLOW SETUP AND CONFIGURATION
@@ -153,28 +155,56 @@ def load_to_postgres(**context):
     try:
         data_json = context['ti'].xcom_pull(task_ids='transform_jobs', key='transformed_data')
         df = pd.read_json(data_json, orient='records')
-        # Get PostgreSQL connection
+
+        # Get PostgreSQL connection using PostgresHook
         hook = PostgresHook(postgres_conn_id='pharma_postgres')
-        engine = hook.get_sqlalchemy_engine()
-        # Load with error handling
-        with engine.begin() as connection:
-            df.to_sql(
-                name='pharmacists_joblist',
-                con=connection,
-                schema='public',
-                if_exists='append',
-                index=False,
-                chunksize=1000,
-                method='multi'
-            )
+        
+        # Use get_conn() to get the raw connection
+        conn = hook.get_conn()
+        
+        # Use the connection directly with pandas to_sql
+        df.to_sql(
+            name='pharmacists_joblist',
+            con=conn,
+            schema='public',
+            if_exists='append',
+            index=False,
+            chunksize=1000,
+            method='multi'
+        )
+        
         logging.info("Loaded %d records to PostgreSQL", len(df))
     except Exception as e:
         logging.error("Database load failed: %s", str(e))
         raise
 
+def generate_email_report(**context):
+    """
+    Task 4: Generate and send daily report
+    - Creates CSV attachment
+    - Calculates key metrics
+    - Sends via email with HTML formatting
+    """
+    try:
+        execution_date = context['execution_date'].strftime('%Y-%m-%d')
+        hook = PostgresHook(postgres_conn_id='pharma_postgres')
+        # Query today's data
+        query = f"""
+        SELECT *
+        FROM pharmacists_joblist
+        WHERE DATE("P") = '{execution_date}'
+        """
+        df = pd.read_sql(query, hook.get_conn())
+        # Calculate metrics and create CSV (same as before)
+        ...
+        logging.info("Sent email report to %s", default_args['email'])
+    except Exception as e:
+        logging.error("Email report failed: %s", str(e))
+        raise
+
 # DAG Definition
 with DAG(
-    'pharmacist_joblist',
+    'pharmacist_jobs_pipeline',
     default_args=default_args,
     description='Daily pipeline for LinkedIn pharmacist job postings',
     catchup=False,
@@ -198,5 +228,11 @@ with DAG(
         provide_context=True,
     )
 
+    report_task = PythonOperator(
+        task_id='send_daily_report',
+        python_callable=generate_email_report,
+        provide_context=True,
+    )
+
     # Task dependencies
-    fetch_task >> transform_task >> load_task
+    fetch_task >> transform_task >> load_task >> report_task

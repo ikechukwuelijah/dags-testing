@@ -7,6 +7,7 @@ from airflow.utils.email import send_email
 import pandas as pd
 import requests
 import logging
+import io
 
 # ====================================================
 # 1. AIRFLOW SETUP AND CONFIGURATION
@@ -145,56 +146,69 @@ def transform_data(**kwargs):
         raise
 
 def load_to_postgres(**context):
-    """
-    Task to load data into PostgreSQL.
-    - Uses Airflow connection
-    - Optimized bulk insert
-    - Connection cleanup
-    """
     try:
         data_json = context['ti'].xcom_pull(task_ids='transform_jobs', key='transformed_data')
         df = pd.read_json(data_json, orient='records')
-
         hook = PostgresHook(postgres_conn_id='pharma_postgres')
         engine = hook.get_sqlalchemy_engine()
 
-        with engine.begin() as connection:
-            df.to_sql(
-                name='pharmacists_joblist',
-                con=connection,
-                schema='public',
-                if_exists='append',
-                index=False,
-                chunksize=1000,
-                method='multi'
-            )
-
+        # Use the engine directly to get a connection and handle transactions manually.
+        with engine.connect() as connection:
+            with connection.begin():
+                df.to_sql(
+                    name='pharmacists_joblist',
+                    con=connection,
+                    schema='public',
+                    if_exists='append',
+                    index=False,
+                    chunksize=1000,
+                    method='multi'
+                )
         logging.info("Loaded %d records to PostgreSQL", len(df))
     except Exception as e:
         logging.error("Database load failed: %s", str(e))
         raise
 
 def generate_email_report(**context):
-    """
-    Task to generate and send daily report.
-    - Creates CSV attachment
-    - Calculates key metrics
-    - Sends via email with HTML formatting
-    """
     try:
         execution_date = context['execution_date'].strftime('%Y-%m-%d')
         hook = PostgresHook(postgres_conn_id='pharma_postgres')
-
         query = f"""
         SELECT *
         FROM pharmacists_joblist
         WHERE DATE("P") = '{execution_date}'
         """
         df = pd.read_sql(query, hook.get_conn())
-
-        # Calculate metrics and create CSV (same as before)
-        ...
-
+        metrics = {
+            'total_jobs': len(df),
+            'top_companies': df['CompanyName'].value_counts().head(3).to_dict(),
+            'common_locations': df['CompanyLocation'].value_counts().head(3).to_dict(),
+            'avg_applicants': df['NoOfApplicants'].mean(),
+            'common_experience_level': df['ExperienceLevel'].mode()[0] if not df.empty else 'N/A'
+        }
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        subject = f"Pharmacist Jobs Report - {execution_date}"
+        html_content = f"""
+        Daily Jobs Report ({execution_date})
+Total Jobs Collected: {metrics['total_jobs']}
+Top Hiring Companies:
+    {"".join(f"{k}: {v} jobs" for k,v in metrics['top_companies'].items())}
+Common Locations:
+    {"".join(f"{k}: {v} postings" for k,v in metrics['common_locations'].items())}
+Average Applicants per Job: {metrics['avg_applicants']:.1f}
+Most Common Experience Level: {metrics['common_experience_level']}
+        """
+        send_email(
+            to=default_args['email'],
+            subject=subject,
+            html_content=html_content,
+            files=[{
+                'filename': f'pharmacist_jobs_{execution_date}.csv',
+                'content': csv_content
+            }]
+        )
         logging.info("Sent email report to %s", default_args['email'])
     except Exception as e:
         logging.error("Email report failed: %s", str(e))
@@ -229,5 +243,4 @@ with DAG(
         provide_context=True,
     )
 
-    # Task dependencies
     fetch_task >> transform_task >> load_task >> report_task

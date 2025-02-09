@@ -135,9 +135,8 @@ def load_to_postgres(**kwargs):
         # Get SQLAlchemy engine from the hook
         engine = pg_hook.get_sqlalchemy_engine()
 
-        # Open connection explicitly
-        with engine.connect() as conn:
-            # Load data into PostgreSQL
+        # Use raw_connection() to get a DBAPI connection with a cursor
+        with engine.raw_connection() as conn:
             df.to_sql(
                 name="healthcare_joblist",
                 con=conn,
@@ -145,12 +144,12 @@ def load_to_postgres(**kwargs):
                 if_exists="append",
                 index=False
             )
-        
+            conn.commit()  # Ensure the transaction is committed
+
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:
         print(f"Error loading data into PostgreSQL: {str(e)}")
         raise
-
 
 def send_email_report(**kwargs):
     """

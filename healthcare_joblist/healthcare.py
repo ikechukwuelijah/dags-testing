@@ -114,8 +114,7 @@ def transform_data(**kwargs):
     
 def load_to_postgres(**kwargs):
     """
-    Load transformed data into PostgreSQL using PostgresHook.
-    Pulls transformed data from XCom and uses bulk insert.
+    Load transformed data into PostgreSQL using PostgresHook's bulk insert.
     """
     try:
         # Pull transformed data from XCom
@@ -123,26 +122,40 @@ def load_to_postgres(**kwargs):
         transformed_data = ti.xcom_pull(task_ids='transform_data', key='transformed_data')
         df = pd.read_json(transformed_data, orient='records')
 
-        # Initialize PostgresHook with Airflow connection
+        # Initialize PostgresHook
         pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
+        conn = pg_hook.get_conn()
+        cursor = conn.cursor()
+
+        # Convert DataFrame to list of tuples (matches table schema)
+        data_tuples = [tuple(x) for x in df.to_numpy()]
+
+        # Use PostgreSQL COPY command for efficient bulk insert
+        from psycopg2.extras import execute_batch
         
-        # Get SQLAlchemy engine from the hook
-        engine = pg_hook.get_sqlalchemy_engine()
+        insert_sql = f"""
+            INSERT INTO healthcare_joblist (
+                id, date_posted, title, organization, organization_url,
+                date_validthrough, location_country, location_locality,
+                latitude, longitude, employment_type, url,
+                linkedin_org_employees, linkedin_org_size, linkedin_org_industry,
+                linkedin_org_locations, seniority
+            ) VALUES ({','.join(['%s']*len(df.columns))})
+        """
 
-        # Use the SQLAlchemy engine directly for pandas to_sql
-        df.to_sql(
-            name="healthcare_joblist",
-            con=engine,
-            schema="public",
-            if_exists="append",
-            index=False,
-            method='multi'  # Optional: improves insert performance
-        )
+        # Batch insert with execute_batch
+        execute_batch(cursor, insert_sql, data_tuples, page_size=100)
+        conn.commit()
 
-        print(f"Loaded {len(df)} records into PostgreSQL.")
+        print(f"Successfully inserted {len(df)} records")
+        
     except Exception as e:
-        print(f"Error loading data into PostgreSQL: {str(e)}")
+        conn.rollback()
+        print(f"Error loading data: {str(e)}")
         raise
+    finally:
+        cursor.close()
+        conn.close()
 
 # ====================================================
 # 3. DEFINE DAG TASKS

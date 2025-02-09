@@ -129,28 +129,20 @@ def load_to_postgres(**kwargs):
         # Get SQLAlchemy engine from the hook
         engine = pg_hook.get_sqlalchemy_engine()
 
-        # Get a raw DBAPI connection (doesn't support context manager)
-        conn = engine.raw_connection()
-        try:
-            # Load data into PostgreSQL
-            df.to_sql(
-                name="healthcare_joblist",
-                con=conn,
-                schema="public",
-                if_exists="append",
-                index=False
-            )
-            # Commit the transaction
-            conn.commit()
-        finally:
-            # Ensure the connection is closed
-            conn.close()
+        # Use the SQLAlchemy engine directly for pandas to_sql
+        df.to_sql(
+            name="healthcare_joblist",
+            con=engine,
+            schema="public",
+            if_exists="append",
+            index=False,
+            method='multi'  # Optional: improves insert performance
+        )
 
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:
         print(f"Error loading data into PostgreSQL: {str(e)}")
         raise
-
 
 # ====================================================
 # 3. DEFINE DAG TASKS

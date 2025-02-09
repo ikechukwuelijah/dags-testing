@@ -118,7 +118,7 @@ def transform_data(**kwargs):
         print(f"Error transforming data: {str(e)}")
         raise
     
-
+        #Load transformed data
 def load_to_postgres(**kwargs):
     try:
         ti = kwargs['ti']

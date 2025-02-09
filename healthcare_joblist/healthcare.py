@@ -18,12 +18,6 @@ default_args = {
     'owner': 'Ik',  # Owner of the DAG
     'depends_on_past': False,  # Do not depend on past runs
     'start_date': datetime(2025, 2, 9),  # Start date for the DAG
-    'email': Variable.get("email_recipients"),  # Email recipients
-    'email_on_failure': True,  # Send email on failure
-    'email_on_retry': False,  # Do not send email on retry
-    'retries': 2,  # Number of retries
-    'retry_delay': timedelta(minutes=5),  # Retry delay
-    'max_active_runs': 1  # Maximum active runs
 }
 
 # Instantiate the DAG
@@ -131,75 +125,24 @@ def load_to_postgres(**kwargs):
 
         # Initialize PostgresHook with Airflow connection
         pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
-        
-        # Get SQLAlchemy engine from the hook
         engine = pg_hook.get_sqlalchemy_engine()
 
-        # Load data into PostgreSQL with proper method to avoid SQLite issues
-        df.to_sql(
-            name="healthcare_joblist",
-            con=engine,
-            schema="public",
-            if_exists="append",
-            index=False,
-            method="multi"  # Faster inserts and avoids SQLite-like behavior
-        )
+        # Use engine.begin() to obtain a proper transactional connection.
+        with engine.begin() as connection:
+            df.to_sql(
+                name="healthcare_joblist",
+                con=connection,
+                schema="public",
+                if_exists="append",
+                index=False,
+                method="multi"
+            )
 
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:
         print(f"Error loading data into PostgreSQL: {str(e)}")
         raise
 
-def send_email_report(**kwargs):
-    """
-    Task to send a daily email report.
-    Includes key metrics and attaches a CSV file of the fetched data.
-    """
-    try:
-        # Pull transformed data from XCom
-        ti = kwargs['ti']
-        transformed_data = ti.xcom_pull(task_ids='transform_data', key='transformed_data')
-        df = pd.read_json(transformed_data, orient='records')
-
-        # Calculate key metrics
-        total_jobs = len(df)
-        top_companies = df['organization'].value_counts().head(3).to_dict()
-        common_locations = df['location_locality'].value_counts().head(3).to_dict()
-        avg_seniority = df['seniority'].mode()[0] if not df.empty else 'N/A'
-
-        # Create CSV attachment
-        csv_buffer = df.to_csv(index=False)
-
-        # Email content
-        subject = f"Daily Healthcare Job Report - {datetime.now().strftime('%Y-%m-%d')}"
-        html_content = f"""
-        <h3>Daily Jobs Report</h3>
-        <p>Total Jobs Collected: {total_jobs}</p>
-        <p>Top Hiring Companies:</p>
-        <ul>
-            {"".join(f"<li>{k}: {v} jobs</li>" for k, v in top_companies.items())}
-        </ul>
-        <p>Common Locations:</p>
-        <ul>
-            {"".join(f"<li>{k}: {v} postings</li>" for k, v in common_locations.items())}
-        </ul>
-        <p>Average Seniority Level: {avg_seniority}</p>
-        """
-
-        # Send email
-        send_email(
-            to=default_args['email'],
-            subject=subject,
-            html_content=html_content,
-            files=[{
-                'filename': f'healthcare_jobs_{datetime.now().strftime("%Y-%m-%d")}.csv',
-                'content': csv_buffer
-            }]
-        )
-        print("Email report sent successfully.")
-    except Exception as e:
-        print(f"Error sending email report: {str(e)}")
-        raise
 
 # ====================================================
 # 3. DEFINE DAG TASKS
@@ -227,12 +170,5 @@ with dag:
         provide_context=True
     )
 
-    # Task 4: Send daily email report
-    email_task = PythonOperator(
-        task_id='send_email_report',
-        python_callable=send_email_report,
-        provide_context=True
-    )
-
     # Define task dependencies
-    fetch_task >> transform_task >> load_task >> email_task
+    fetch_task >> transform_task >> load_task

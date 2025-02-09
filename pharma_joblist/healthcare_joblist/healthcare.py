@@ -117,26 +117,22 @@ def transform_data(**kwargs):
     except Exception as e:
         print(f"Error transforming data: {str(e)}")
         raise
-
+    
 
 def load_to_postgres(**kwargs):
-    """
-    Load transformed data into PostgreSQL using PostgresHook.
-    Pulls transformed data from XCom and uses bulk insert.
-    """
     try:
-        # Pull transformed data from XCom
         ti = kwargs['ti']
         transformed_data = ti.xcom_pull(task_ids='transform_data', key='transformed_data')
         df = pd.read_json(transformed_data, orient='records')
 
-        # Initialize PostgresHook with Airflow connection
-        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")  # Use your connection ID
+        # Initialize PostgresHook
+        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
         
-        # Get SQLAlchemy engine from the hook
-        engine = pg_hook.get_sqlalchemy_engine()
+        # Get connection URI and enforce psycopg2 driver
+        uri = pg_hook.get_uri().replace("postgresql://", "postgresql+psycopg2://")
+        engine = create_engine(uri)
 
-        # Load data into PostgreSQL
+        # Load data
         df.to_sql(
             name="healthcare_joblist",
             con=engine,
@@ -146,7 +142,7 @@ def load_to_postgres(**kwargs):
         )
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:
-        print(f"Error loading data into PostgreSQL: {str(e)}")
+        print(f"Error loading data: {str(e)}")
         raise
 
 

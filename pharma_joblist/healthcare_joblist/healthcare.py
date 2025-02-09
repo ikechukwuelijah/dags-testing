@@ -121,7 +121,7 @@ def transform_data(**kwargs):
 
 def load_to_postgres(**kwargs):
     """
-    Task to load transformed data into PostgreSQL using PostgresHook.
+    Load transformed data into PostgreSQL using PostgresHook.
     Pulls transformed data from XCom and uses bulk insert.
     """
     try:

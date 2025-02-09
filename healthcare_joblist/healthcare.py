@@ -130,13 +130,15 @@ def load_to_postgres(**kwargs):
         df = pd.read_json(transformed_data, orient='records')
 
         # Initialize PostgresHook with Airflow connection
-        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")  # Use your connection ID
+        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
         
         # Get SQLAlchemy engine from the hook
         engine = pg_hook.get_sqlalchemy_engine()
 
-        # Use raw_connection() to get a DBAPI connection with a cursor
-        with engine.raw_connection() as conn:
+        # Get a raw DBAPI connection (doesn't support context manager)
+        conn = engine.raw_connection()
+        try:
+            # Load data into PostgreSQL
             df.to_sql(
                 name="healthcare_joblist",
                 con=conn,
@@ -144,12 +146,17 @@ def load_to_postgres(**kwargs):
                 if_exists="append",
                 index=False
             )
-            conn.commit()  # Ensure the transaction is committed
+            # Commit the transaction
+            conn.commit()
+        finally:
+            # Ensure the connection is closed
+            conn.close()
 
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:
         print(f"Error loading data into PostgreSQL: {str(e)}")
         raise
+
 
 def send_email_report(**kwargs):
     """

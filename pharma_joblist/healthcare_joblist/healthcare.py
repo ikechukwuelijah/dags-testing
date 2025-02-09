@@ -121,8 +121,8 @@ def transform_data(**kwargs):
 
 def load_to_postgres(**kwargs):
     """
-    Task to load transformed data into PostgreSQL.
-    Pulls transformed data from XCom and uses SQLAlchemy for bulk insert.
+    Load transformed data into PostgreSQL using PostgresHook.
+    Pulls transformed data from XCom and uses bulk insert.
     """
     try:
         # Pull transformed data from XCom
@@ -130,25 +130,19 @@ def load_to_postgres(**kwargs):
         transformed_data = ti.xcom_pull(task_ids='transform_data', key='transformed_data')
         df = pd.read_json(transformed_data, orient='records')
 
-        # PostgreSQL connection details
-        db_config = {
-            "dbname": "dwh",
-            "user": "ikeengr",
-            "password": "DataEngineer247",
-            "host": "89.40.0.150",
-            "port": "5432"
-        }
-
-        # Create SQLAlchemy engine
-        engine = create_engine(f"postgresql+psycopg2://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{db_config['dbname']}")
+        # Initialize PostgresHook with Airflow connection
+        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")  # Use your connection ID
+        
+        # Get SQLAlchemy engine from the hook
+        engine = pg_hook.get_sqlalchemy_engine()
 
         # Load data into PostgreSQL
         df.to_sql(
-            name="healthcare_joblist",  # Table name
+            name="healthcare_joblist",
             con=engine,
-            schema="public",  # Schema name
-            if_exists="append",  # Append data to existing table
-            index=False  # Do not include DataFrame index
+            schema="public",
+            if_exists="append",
+            index=False
         )
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:

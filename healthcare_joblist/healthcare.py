@@ -125,18 +125,26 @@ def load_to_postgres(**kwargs):
 
         # Initialize PostgresHook with Airflow connection
         pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
+        
+        # Get SQLAlchemy engine from the hook
         engine = pg_hook.get_sqlalchemy_engine()
 
-        # Use engine.begin() to obtain a proper transactional connection.
-        with engine.begin() as connection:
+        # Get a raw DBAPI connection (doesn't support context manager)
+        conn = engine.raw_connection()
+        try:
+            # Load data into PostgreSQL
             df.to_sql(
                 name="healthcare_joblist",
-                con=connection,
+                con=conn,
                 schema="public",
                 if_exists="append",
-                index=False,
-                method="multi"
+                index=False
             )
+            # Commit the transaction
+            conn.commit()
+        finally:
+            # Ensure the connection is closed
+            conn.close()
 
         print(f"Loaded {len(df)} records into PostgreSQL.")
     except Exception as e:

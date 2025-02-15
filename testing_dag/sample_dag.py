@@ -29,7 +29,7 @@ with DAG(
         bash_command='echo "Hello from Airflow!"'
     )
 
-    # Task to check the current date
+    # Task to check the current date#
     task_date = BashOperator(
         task_id='print_date',
         bash_command='date'

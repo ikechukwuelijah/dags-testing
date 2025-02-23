@@ -1,10 +1,9 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook  # Ensure this import is present
 from airflow.utils.dates import days_ago
 from datetime import timedelta
 import requests
-import psycopg2
-from psycopg2 import sql
 
 # Default arguments for the DAG
 default_args = {
@@ -38,7 +37,6 @@ with DAG(
             'vs_currencies': 'usd',
             'include_24hr_change': 'true'
         }
-
         try:
             response = requests.get(url, params=parameters)
             response.raise_for_status()  # Raise an exception for HTTP errors
@@ -64,7 +62,7 @@ with DAG(
         except requests.RequestException as e:
             raise ValueError(f"Error fetching data from CoinGecko API: {e}")
 
-# Task to insert data into PostgreSQL using PostgresHook
+    # Task to insert data into PostgreSQL using PostgresHook
     def insert_data_into_db(crypto_data):
         """
         Inserts cryptocurrency price data into a PostgreSQL database using PostgresHook.

@@ -74,7 +74,7 @@ with DAG(
 
         try:
             # Use PostgresHook to get the connection
-            hook = PostgresHook(postgres_conn_id='postgres_dwh')  # Replace with your connection ID
+            hook = PostgresHook(postgres_conn_id='postgres_crypto')  # Replace with your connection ID
             conn = hook.get_conn()
             cursor = conn.cursor()
 

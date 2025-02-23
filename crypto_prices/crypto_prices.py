@@ -1,9 +1,10 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.hooks.postgres import PostgresHook  # Ensure this import is present
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.utils.dates import days_ago
 from datetime import timedelta
 import requests
+import json  # Import json for serialization/deserialization
 
 # Default arguments for the DAG
 default_args = {
@@ -71,6 +72,10 @@ with DAG(
             raise ValueError("No data to insert.")
 
         try:
+            # Ensure the data is a list of dictionaries
+            if isinstance(crypto_data, str):  # If the data is a JSON string, deserialize it
+                crypto_data = json.loads(crypto_data)
+
             # Use PostgresHook to get the connection
             hook = PostgresHook(postgres_conn_id='postgres_crypto')  # Replace with your connection ID
             conn = hook.get_conn()

@@ -64,32 +64,39 @@ with DAG(
         except requests.RequestException as e:
             raise ValueError(f"Error fetching data from CoinGecko API: {e}")
 
-    # Task to insert data into PostgreSQL
+# Task to insert data into PostgreSQL using PostgresHook
     def insert_data_into_db(crypto_data):
         """
-        Inserts cryptocurrency price data into a PostgreSQL database.
+        Inserts cryptocurrency price data into a PostgreSQL database using PostgresHook.
         """
         if not crypto_data:
             raise ValueError("No data to insert.")
 
         try:
+            # Use PostgresHook to get the connection
+            hook = PostgresHook(postgres_conn_id='postgres_dwh')  # Replace with your connection ID
+            conn = hook.get_conn()
+            cursor = conn.cursor()
 
-            cursor = connection.cursor()
-            insert_query = sql.SQL("""
+            # Define the SQL query
+            insert_query = """
                 INSERT INTO crypto_prices (symbol, price_usd, change_24h)
                 VALUES (%s, %s, %s)
-            """)
+            """
 
+            # Insert each record into the database
             for record in crypto_data:
                 cursor.execute(insert_query, (
                     record['symbol'], record['price_usd'], record['change_24h']
                 ))
 
-            connection.commit()
+            # Commit the transaction
+            conn.commit()
             cursor.close()
-            connection.close()
+            conn.close()
+
             print("Data inserted successfully.")
-        except psycopg2.DatabaseError as e:
+        except Exception as e:
             raise ValueError(f"Error inserting data into PostgreSQL: {e}")
 
     # Define the first task to fetch cryptocurrency prices

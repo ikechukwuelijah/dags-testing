@@ -48,13 +48,6 @@ def insert_data_into_db(**context):
     """
     crypto_data = context['task_instance'].xcom_pull(key='crypto_data', task_ids='fetch_crypto_prices')
     try:
-        connection = psycopg2.connect(
-            dbname='dwh',  # Replace with your database name
-            user='ikeengr',  # Replace with your PostgreSQL username
-            password='DataEngineer247',  # Replace with your PostgreSQL password
-            host='89.40.0.150',  # Replace with your PostgreSQL server address if not local
-            port='5432'  # Default PostgreSQL port
-        )
         cursor = connection.cursor()
         
         insert_query = sql.SQL("""

@@ -1,8 +1,8 @@
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
+import requests
 import json
 import pandas as pd
 
@@ -25,8 +25,7 @@ dag = DAG(
 
 # Extract: Fetch news data from API
 def extract_news(ti):
-
-    URL = "https://newsapi.org/v2/top-headlines?country=us&category=technology&apiKey=" + API_KEY
+    URL = f"https://newsapi.org/v2/top-headlines?country=us&category=technology&apiKey=9d64ba92867247f2a6c57a04a7eebc78"
     
     response = requests.get(URL)
     if response.status_code == 200:
@@ -97,4 +96,5 @@ load_task = PythonOperator(
     dag=dag,
 )
 
+# Set task dependencies
 extract_task >> transform_task >> load_task

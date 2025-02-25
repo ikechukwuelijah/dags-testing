@@ -25,7 +25,7 @@ dag = DAG(
 
 # Extract: Fetch news data from API
 def extract_news(ti):
-    URL = f"https://newsapi.org/v2/top-headlines?country=us&category=technology&api_key"
+    URL = f"https://newsapi.org/v2/top-headlines?country=us&category=technology&api_key=9d64ba92867247f2a6c57a04a7eebc78"
     
     response = requests.get(URL)
     if response.status_code == 200:

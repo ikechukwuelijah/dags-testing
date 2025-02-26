@@ -8,9 +8,7 @@ import requests
 import json
 import pandas as pd
 from sqlalchemy import create_engine
-# ====================================================
-# 1. AIRFLOW SETUP AND CONFIGURATION
-# ====================================================
+
 # Default arguments for the DAG
 default_args = {
     'owner': 'Ik',  # Owner of the DAG
@@ -26,9 +24,7 @@ dag = DAG(
     catchup=False,  # Do not backfill past runs
     tags=['healthcare', 'linkedin']  # Tags for categorization
 )
-# ====================================================
-# 2. HELPER FUNCTIONS FOR TASKS
-# ====================================================
+
 def fetch_data(**kwargs):
     """
     Task to fetch data from LinkedIn API.
@@ -157,9 +153,7 @@ def load_to_postgres(**kwargs):
     finally:
         cursor.close()
         conn.close()
-# ====================================================
-# 3. DEFINE DAG TASKS
-# ====================================================
+
 with dag:
     # Task 1: Fetch data from LinkedIn API
     fetch_task = PythonOperator(

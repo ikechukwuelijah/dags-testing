@@ -10,7 +10,7 @@ TABLE_NAME = "us_stock_market"
 
 # Default arguments for DAG
 default_args = {
-    "owner": "airflow",
+    "owner": "Ik",
     "depends_on_past": False,
     "start_date": datetime(2025, 2, 26),
     "retries": 1,

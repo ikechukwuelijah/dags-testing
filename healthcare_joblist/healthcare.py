@@ -14,6 +14,7 @@ default_args = {
     'owner': 'Ik',  # Owner of the DAG
     'depends_on_past': False,  # Do not depend on past runs
     'start_date': datetime(2025, 2, 26),  # Start date for the DAG
+
 }
 # Instantiate the DAG
 dag = DAG(
@@ -120,15 +121,16 @@ def load_to_postgres(**kwargs):
         ti = kwargs['ti']
         transformed_data = ti.xcom_pull(task_ids='transform_data', key='transformed_data')
         df = pd.read_json(transformed_data, orient='records')
+
         
         # Initialize PostgresHook
         pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
         conn = pg_hook.get_conn()
         cursor = conn.cursor()
-        
+
         # Convert DataFrame to list of tuples (matches table schema)
         data_tuples = [tuple(x) for x in df.to_numpy()]
-        
+
         # Use PostgreSQL COPY command for efficient bulk insert
         from psycopg2.extras import execute_batch
         
@@ -141,9 +143,11 @@ def load_to_postgres(**kwargs):
                 linkedin_org_locations, seniority
             ) VALUES ({','.join(['%s']*len(df.columns))})
         """
+
         # Batch insert with execute_batch
         execute_batch(cursor, insert_sql, data_tuples, page_size=100)
         conn.commit()
+
         print(f"Successfully inserted {len(df)} records")
         
     except Exception as e:
@@ -153,7 +157,7 @@ def load_to_postgres(**kwargs):
     finally:
         cursor.close()
         conn.close()
-
+        
 with dag:
     # Task 1: Fetch data from LinkedIn API
     fetch_task = PythonOperator(
@@ -173,5 +177,7 @@ with dag:
         python_callable=load_to_postgres,
         provide_context=True
     )
+
     # Define task dependencies
     fetch_task >> transform_task >> load_task
+

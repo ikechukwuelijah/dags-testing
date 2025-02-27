@@ -7,10 +7,10 @@ from psycopg2 import sql
 API_KEY = 'db63bf0ee9433d6be33835f6066f606c'
 
 # PostgreSQL connection details
-DB_NAME = 'dwh'
-DB_USER = 'ikeengr'
-DB_PASSWORD = 'DataEngineer247'
-DB_HOST = '89.40.0.150'
+DB_NAME = ''
+DB_USER = ''
+DB_PASSWORD = ''
+DB_HOST = ''
 DB_PORT = '5432'  # Default is 5432
 
 # Function to fetch data from API-Football

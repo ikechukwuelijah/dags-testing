@@ -4,7 +4,7 @@ import pandas as pd
 import psycopg2
 
 # Constants
-API_URL = "https://api.openchargemap.io/v3/poi/?output=kml&countrycode=GB&maxresults=5000&key=c8548da8-d611-4aea-b4e2-bfe17944b989"
+API_URL = "https://api.openchargemap.io/v3/poi/?output=kml&countrycode=CA&maxresults=5000&key=c8548da8-d611-4aea-b4e2-bfe17944b989"
 
 # PostgreSQL database credentials
 DB_CONFIG = {

@@ -100,9 +100,6 @@ def upload_to_postgres():
         cursor.execute(create_table_query)
         conn.commit()
 
-        # Read CSV
-        df = pd.read_csv('/opt/airflow/dags/top_scorers.csv')
-
         # Replace NaN with 0
         df = df.fillna(0)
 

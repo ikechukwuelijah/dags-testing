@@ -1,23 +1,20 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 import requests
 import pandas as pd
-import psycopg2
-from psycopg2 import sql
+from datetime import datetime, timedelta
 
-# PostgreSQL database credentials
-DB_NAME = ''
-DB_USER = ''
-DB_PASSWORD = ''
-DB_HOST = ''
-DB_PORT = '5432'
-
-# Function to fetch data from REST Countries API
 def fetch_all_countries():
+    """Fetch data from REST Countries API."""
     url = 'https://restcountries.com/v3.1/all'
     response = requests.get(url)
     return response.json()
 
-# Transforming data into a DataFrame
-def transform_data(data):
+def transform_data(**kwargs):
+    """Transform JSON data into a structured format using Pandas."""
+    data = kwargs['ti'].xcom_pull(task_ids='fetch_data')
+    
     countries = []
     for country in data:
         country_info = {
@@ -25,7 +22,7 @@ def transform_data(data):
             'Capital': country.get('capital', ['N/A'])[0],
             'Region': country.get('region', 'N/A'),
             'Subregion': country.get('subregion', 'N/A'),
-            'Population': country.get('population', 0),  # Ensure numerical consistency
+            'Population': country.get('population', 0),
             'Area': country.get('area', 0),
             'Languages': ', '.join(country.get('languages', {}).values()) if 'languages' in country else 'N/A',
             'Currencies': ', '.join([currency['name'] for currency in country.get('currencies', {}).values()]) if 'currencies' in country else 'N/A',
@@ -34,20 +31,15 @@ def transform_data(data):
         countries.append(country_info)
     
     df = pd.DataFrame(countries)
-    return df
+    kwargs['ti'].xcom_push(key='transformed_data', value=df.to_dict(orient='records'))
 
-# Function to upload data to PostgreSQL database
-def upload_data_to_postgres(df):
-    conn = psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
-    )
+def upload_data_to_postgres(**kwargs):
+    """Upload transformed data to PostgreSQL using PostgresHook."""
+    pg_hook = PostgresHook(postgres_conn_id='postgres_dwh')
+    conn = pg_hook.get_conn()
     cur = conn.cursor()
     
-    # Creating table with UNIQUE constraint on the name column
+    # Create table if not exists
     create_table_query = '''
     CREATE TABLE IF NOT EXISTS countries (
         name TEXT UNIQUE,
@@ -63,8 +55,9 @@ def upload_data_to_postgres(df):
     '''
     cur.execute(create_table_query)
     
-    # Inserting data into the table
-    for _, row in df.iterrows():
+    # Insert transformed data
+    data = kwargs['ti'].xcom_pull(task_ids='transform_data', key='transformed_data')
+    for row in data:
         insert_query = '''
         INSERT INTO countries (name, capital, region, subregion, population, area, languages, currencies, flag)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -78,14 +71,49 @@ def upload_data_to_postgres(df):
             currencies = EXCLUDED.currencies,
             flag = EXCLUDED.flag;
         '''
-        cur.execute(insert_query, tuple(row))
-
+        cur.execute(insert_query, (
+            row['Name'], row['Capital'], row['Region'], row['Subregion'], row['Population'], 
+            row['Area'], row['Languages'], row['Currencies'], row['Flag']
+        ))
+    
     conn.commit()
     cur.close()
     conn.close()
 
-if __name__ == "__main__":
-    data = fetch_all_countries()
-    df = transform_data(data)
-    upload_data_to_postgres(df)
-    print("Data has been successfully uploaded to the PostgreSQL database.")
+# Default arguments for the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2025, 3, 1),
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# Define DAG
+with DAG(
+    'country_data_pipeline',
+    default_args=default_args,
+    description='A DAG to fetch, transform, and upload country data weekly',
+    schedule_interval='@weekly',
+    catchup=False
+) as dag:
+    
+    fetch_data = PythonOperator(
+        task_id='fetch_data',
+        python_callable=fetch_all_countries,
+        provide_context=True
+    )
+    
+    transform_data_task = PythonOperator(
+        task_id='transform_data',
+        python_callable=transform_data,
+        provide_context=True
+    )
+    
+    upload_data_task = PythonOperator(
+        task_id='upload_data',
+        python_callable=upload_data_to_postgres,
+        provide_context=True
+    )
+    
+    fetch_data >> transform_data_task >> upload_data_task

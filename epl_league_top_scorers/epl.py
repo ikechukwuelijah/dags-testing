@@ -1,34 +1,39 @@
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
-import psycopg2
-from psycopg2 import sql
 
-# Your API key
-API_KEY = 'db63bf0ee9433d6be33835f6066f606c'
 
-# PostgreSQL connection details
-DB_NAME = ''
-DB_USER = ''
-DB_PASSWORD = ''
-DB_HOST = ''
-DB_PORT = '5432'  # Default is 5432
+# Define default arguments for the DAG
+default_args = {
+    'owner': 'Ik',
+    'start_date': datetime(2025, 3, 1),
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5)
+}
+
+# Define the Airflow DAG
+dag = DAG(
+    'epl_top_scorers',
+    default_args=default_args,
+    schedule_interval='@weekly',  # Runs weekly
+    catchup=False
+)
 
 # Function to fetch data from API-Football
-def fetch_data(endpoint, params=None):
-    url = f'https://v3.football.api-sports.io/{endpoint}'
+def fetch_data():
+    url = 'https://v3.football.api-sports.io/players/topscorers'
+    params = {'league': 39, 'season': 2023}  # Premier League, Season 2023
     headers = {'x-apisports-key': API_KEY}
     response = requests.get(url, headers=headers, params=params)
-    return response.json()
-
-# Fetching Top Scorers Data
-def get_top_scorers(league_id, season):
-    endpoint = 'players/topscorers'
-    params = {'league': league_id, 'season': season}
-    data = fetch_data(endpoint, params)
+    data = response.json()
     return data
 
-# Transforming Data to a DataFrame
-def transform_data(data):
+# Function to transform data into a Pandas DataFrame
+def transform_data():
+    data = fetch_data()
     players = data.get('response', [])
     extracted_data = []
 
@@ -56,16 +61,13 @@ def transform_data(data):
         })
 
     df = pd.DataFrame(extracted_data)
-    return df
+    df.to_csv('/tmp/top_scorers.csv', index=False)  # Save to temp file
 
-# Function to upload DataFrame to PostgreSQL
-def upload_to_postgres(df):
+# Function to upload DataFrame to PostgreSQL using PostgresHook
+def upload_to_postgres():
     try:
-        # Connect to PostgreSQL
-        conn = psycopg2.connect(
-            dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD,
-            host=DB_HOST, port=DB_PORT
-        )
+        hook = PostgresHook(postgres_conn_id='postgres_dwh')
+        conn = hook.get_conn()
         cursor = conn.cursor()
 
         # Create table if not exists
@@ -93,16 +95,16 @@ def upload_to_postgres(df):
         cursor.execute(create_table_query)
         conn.commit()
 
-        # Insert DataFrame into PostgreSQL
+        # Read CSV and insert into PostgreSQL
+        df = pd.read_csv('/tmp/top_scorers.csv')
         for _, row in df.iterrows():
             insert_query = """
             INSERT INTO epl_top_scorers (name, age, nationality, team, games, goals, assists, shots, shots_on_target, 
-                                     passes, key_passes, dribbles, dribbles_success, yellow_cards, red_cards, penalties_scored)
+                                         passes, key_passes, dribbles, dribbles_success, yellow_cards, red_cards, penalties_scored)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """
             cursor.execute(insert_query, tuple(row))
 
-        # Commit and close connection
         conn.commit()
         cursor.close()
         conn.close()
@@ -111,17 +113,24 @@ def upload_to_postgres(df):
     except Exception as e:
         print("Error uploading data to PostgreSQL:", e)
 
-# Main execution
-if __name__ == "__main__":
-    league_id = 39  # Premier League ID
-    season = 2023   # Season year
+# Define Airflow tasks
+fetch_task = PythonOperator(
+    task_id='fetch_data',
+    python_callable=fetch_data,
+    dag=dag,
+)
 
-    data = get_top_scorers(league_id, season)
-    df = transform_data(data)
+transform_task = PythonOperator(
+    task_id='transform_data',
+    python_callable=transform_data,
+    dag=dag,
+)
 
-    # Save data to CSV
-    df.to_csv('top_scorers.csv', index=False)
-    print("Data saved to top_scorers.csv")
+upload_task = PythonOperator(
+    task_id='upload_to_postgres',
+    python_callable=upload_to_postgres,
+    dag=dag,
+)
 
-    # Upload to PostgreSQL
-    upload_to_postgres(df)
+# Define task dependencies
+fetch_task >> transform_task >> upload_task

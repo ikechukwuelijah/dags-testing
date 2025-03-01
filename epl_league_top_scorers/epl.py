@@ -26,7 +26,7 @@ dag = DAG(
 def fetch_data():
     url = 'https://v3.football.api-sports.io/players/topscorers'
     params = {'league': 39, 'season': 2023}  # Premier League, Season 2023
-    headers = {'x-apisports-key': API_KEY}
+    headers = {'x-apisports-key': db63bf0ee9433d6be33835f6066f606c}
     response = requests.get(url, headers=headers, params=params)
     data = response.json()
     return data

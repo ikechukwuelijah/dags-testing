@@ -64,7 +64,7 @@ def upload_to_postgres(**kwargs):
             conn = hook.get_conn()
             cursor = conn.cursor()
 
-            # Create table if it doesn't exist
+            # Create table if it doesn't exist (ensure all necessary columns exist)
             create_table_query = """
             CREATE TABLE IF NOT EXISTS uk_police_crime (
                 id SERIAL PRIMARY KEY,

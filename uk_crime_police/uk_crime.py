@@ -50,7 +50,6 @@ def transform_data(**kwargs):
     else:
         raise ValueError("No data found to transform.")
 
-# Function to upload data to PostgreSQL using PostgresHook
 def upload_to_postgres(**kwargs):
     ti = kwargs['ti']
     df_json = ti.xcom_pull(key='transformed_data', task_ids='transform_data')
@@ -109,28 +108,3 @@ def upload_to_postgres(**kwargs):
 
         except Exception as e:
             raise ValueError(f"Error uploading data to PostgreSQL: {e}")
-
-# Define Airflow tasks
-fetch_task = PythonOperator(
-    task_id='fetch_data',
-    python_callable=fetch_data,
-    provide_context=True,
-    dag=dag,
-)
-
-transform_task = PythonOperator(
-    task_id='transform_data',
-    python_callable=transform_data,
-    provide_context=True,
-    dag=dag,
-)
-
-upload_task = PythonOperator(
-    task_id='upload_to_postgres',
-    python_callable=upload_to_postgres,
-    provide_context=True,
-    dag=dag,
-)
-
-# Define task dependencies
-fetch_task >> transform_task >> upload_task

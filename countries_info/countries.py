@@ -82,7 +82,7 @@ def upload_data_to_postgres(**kwargs):
 
 # Default arguments for the DAG
 default_args = {
-    'owner': 'airflow',
+    'owner': 'Ik',
     'depends_on_past': False,
     'start_date': datetime(2025, 3, 1),
     'retries': 1,

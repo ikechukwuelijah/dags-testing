@@ -4,7 +4,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
-
+import traceback
 
 # Define default arguments for the DAG
 default_args = {
@@ -18,7 +18,7 @@ default_args = {
 dag = DAG(
     'epl_top_scorers',
     default_args=default_args,
-    schedule_interval='@weekly',  # Runs weekly
+    schedule_interval='@weekly',
     catchup=False
 )
 
@@ -26,9 +26,14 @@ dag = DAG(
 def fetch_data():
     url = 'https://v3.football.api-sports.io/players/topscorers'
     params = {'league': 39, 'season': 2023}  # Premier League, Season 2023
-    headers = {'x-apisports-key': db63bf0ee9433d6be33835f6066f606c}
+    headers = {'x-apisports-key': 'db63bf0ee9433d6be33835f6066f606c'}
+    
     response = requests.get(url, headers=headers, params=params)
     data = response.json()
+    
+    if response.status_code != 200:
+        raise Exception(f"API request failed: {data}")
+    
     return data
 
 # Function to transform data into a Pandas DataFrame
@@ -39,38 +44,38 @@ def transform_data():
 
     for player in players:
         player_info = player.get('player', {})
-        statistics = player.get('statistics', [])[0]  # First entry has main stats
+        statistics = player.get('statistics', [{}])[0]  # Avoid index error
 
         extracted_data.append({
             'name': player_info.get('name'),
-            'age': player_info.get('age'),
-            'nationality': player_info.get('nationality'),
-            'team': statistics.get('team', {}).get('name'),
-            'games': statistics.get('games', {}).get('appearences'),
-            'goals': statistics.get('goals', {}).get('total'),
-            'assists': statistics.get('goals', {}).get('assists'),
-            'shots': statistics.get('shots', {}).get('total'),
-            'shots_on_target': statistics.get('shots', {}).get('on'),
-            'passes': statistics.get('passes', {}).get('total'),
-            'key_passes': statistics.get('passes', {}).get('key'),
-            'dribbles': statistics.get('dribbles', {}).get('attempts'),
-            'dribbles_success': statistics.get('dribbles', {}).get('success'),
-            'yellow_cards': statistics.get('cards', {}).get('yellow'),
-            'red_cards': statistics.get('cards', {}).get('red'),
-            'penalties_scored': statistics.get('penalty', {}).get('scored'),
+            'age': player_info.get('age', 0),
+            'nationality': player_info.get('nationality', ''),
+            'team': statistics.get('team', {}).get('name', ''),
+            'games': statistics.get('games', {}).get('appearences', 0),
+            'goals': statistics.get('goals', {}).get('total', 0),
+            'assists': statistics.get('goals', {}).get('assists', 0),
+            'shots': statistics.get('shots', {}).get('total', 0),
+            'shots_on_target': statistics.get('shots', {}).get('on', 0),
+            'passes': statistics.get('passes', {}).get('total', 0),
+            'key_passes': statistics.get('passes', {}).get('key', 0),
+            'dribbles': statistics.get('dribbles', {}).get('attempts', 0),
+            'dribbles_success': statistics.get('dribbles', {}).get('success', 0),
+            'yellow_cards': statistics.get('cards', {}).get('yellow', 0),
+            'red_cards': statistics.get('cards', {}).get('red', 0),
+            'penalties_scored': statistics.get('penalty', {}).get('scored', 0),
         })
 
     df = pd.DataFrame(extracted_data)
-    df.to_csv('/tmp/top_scorers.csv', index=False)  # Save to temp file
+    df.to_csv('/opt/airflow/dags/top_scorers.csv', index=False)
 
-# Function to upload DataFrame to PostgreSQL using PostgresHook
+# Function to upload DataFrame to PostgreSQL
 def upload_to_postgres():
     try:
         hook = PostgresHook(postgres_conn_id='postgres_dwh')
         conn = hook.get_conn()
         cursor = conn.cursor()
 
-        # Create table if not exists
+        # Ensure table exists
         create_table_query = """
         CREATE TABLE IF NOT EXISTS epl_top_scorers (
             id SERIAL PRIMARY KEY,
@@ -95,23 +100,30 @@ def upload_to_postgres():
         cursor.execute(create_table_query)
         conn.commit()
 
-        # Read CSV and insert into PostgreSQL
-        df = pd.read_csv('/tmp/top_scorers.csv')
+        # Read CSV
+        df = pd.read_csv('/opt/airflow/dags/top_scorers.csv')
+
+        # Replace NaN with 0
+        df = df.fillna(0)
+
+        # Insert data
+        insert_query = """
+        INSERT INTO epl_top_scorers (name, age, nationality, team, games, goals, assists, shots, shots_on_target, 
+                                     passes, key_passes, dribbles, dribbles_success, yellow_cards, red_cards, penalties_scored)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """
+
         for _, row in df.iterrows():
-            insert_query = """
-            INSERT INTO epl_top_scorers (name, age, nationality, team, games, goals, assists, shots, shots_on_target, 
-                                         passes, key_passes, dribbles, dribbles_success, yellow_cards, red_cards, penalties_scored)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """
             cursor.execute(insert_query, tuple(row))
 
         conn.commit()
         cursor.close()
         conn.close()
-        print("Data successfully uploaded to PostgreSQL.")
+        print("✅ Data successfully uploaded to PostgreSQL.")
 
     except Exception as e:
-        print("Error uploading data to PostgreSQL:", e)
+        print("❌ Error uploading data to PostgreSQL")
+        print(traceback.format_exc())
 
 # Define Airflow tasks
 fetch_task = PythonOperator(

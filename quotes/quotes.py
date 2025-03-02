@@ -3,9 +3,10 @@ import pandas as pd
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import DictCursor
+import time  # Importing time module to add a delay between requests
 
-# Step 1: Fetch Data from the API
-def fetch_quote():
+# Step 1: Fetch Multiple Quotes from the API with Rate Limiting
+def fetch_quotes(num_quotes=10, delay_seconds=2):
     url = "https://quotes15.p.rapidapi.com/quotes/random/"
     querystring = {"language_code": "en"}
     headers = {
@@ -13,32 +14,45 @@ def fetch_quote():
         "x-rapidapi-host": "quotes15.p.rapidapi.com"
     }
 
-    try:
-        response = requests.get(url, headers=headers, params=querystring)
-        response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
-        data = response.json()
-        print("API Response:", data)  # Debugging: Print the raw response
+    all_quotes = []
+    
+    for _ in range(num_quotes):
+        try:
+            response = requests.get(url, headers=headers, params=querystring)
+            response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
+            
+            # Check for 429 status code (Too Many Requests)
+            if response.status_code == 429:
+                print("Rate limit exceeded. Waiting before retrying...")
+                time.sleep(delay_seconds)  # Delay for a specified time to avoid rate limiting
 
-        # Extract relevant fields
-        quote_data = {
-            "id": data.get("id") or data.get("quoteId"),  # Ensure correct ID extraction
-            "content": data.get("content"),
-            "author": data.get("originator", {}).get("name", "Unknown"),
-            "tags": ", ".join(data.get("tags", []))  # Convert list to string
-        }
+            data = response.json()
+            print("API Response:", data)  # Debugging: Print the raw response
 
-        return quote_data
+            # Extract relevant fields
+            quote_data = {
+                "id": data.get("id") or data.get("quoteId"),  # Ensure correct ID extraction
+                "content": data.get("content"),
+                "author": data.get("originator", {}).get("name", "Unknown"),
+                "tags": ", ".join(data.get("tags", []))  # Convert list to string
+            }
+            all_quotes.append(quote_data)
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching data: {e}")
-        return None
+            # Wait for a brief period to avoid hitting rate limits
+            time.sleep(delay_seconds)  # Add delay after each request to prevent hitting the rate limit
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching data: {e}")
+            continue  # Skip this request and move to the next one
+
+    return all_quotes
 
 
 # Step 2: Transform Data into a DataFrame
 def transform_data(quote_data):
     if not quote_data:
         return None  # No data fetched
-    return pd.DataFrame([quote_data])
+    return pd.DataFrame(quote_data)
 
 
 # Step 3: Load Data into PostgreSQL Database using psycopg2
@@ -119,6 +133,7 @@ def load_data(df):
 
 # Run the pipeline
 if __name__ == "__main__":
-    quote = fetch_quote()
-    df = transform_data(quote)
+    num_quotes_to_fetch = 10  # Set how many quotes you want to fetch
+    all_quote_data = fetch_quotes(num_quotes=num_quotes_to_fetch, delay_seconds=2)  # Adding delay to avoid 429 errors
+    df = transform_data(all_quote_data)
     load_data(df)

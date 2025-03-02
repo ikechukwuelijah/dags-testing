@@ -3,68 +3,81 @@ import pandas as pd
 import psycopg2
 from psycopg2 import sql
 
-# PostgreSQL Database Configuration
-DB_NAME = "dwh"
-DB_USER = "ikeengr"
-DB_PASSWORD = "DataEngineer247"
-DB_HOST = "89.40.0.150"  # Change if using a remote server
-DB_PORT = "5432"  # Default PostgreSQL port
+# Define the base URLs for the categories
+urls = {
+    "general": "https://official-joke-api.appspot.com/jokes/general/ten",
+    "programming": "https://official-joke-api.appspot.com/jokes/programming/ten"
+}
 
-# API URL to fetch all jokes
-url = "https://official-joke-api.appspot.com/jokes/general/ten"
+# Fetch jokes from multiple categories
+all_jokes = []
+for category, url in urls.items():
+    response = requests.get(url)
+    if response.status_code == 200:
+        jokes = response.json()
+        for joke in jokes:
+            joke['category'] = category  # Add a category label to each joke
+        all_jokes.extend(jokes)
+    else:
+        print(f"Failed to retrieve data from {category} category")
 
-# Fetch data from API
-response = requests.get(url)
-
-if response.status_code == 200:
-    jokes = response.json()  # Convert response to JSON
-    df = pd.DataFrame(jokes)  # Convert JSON to DataFrame
+# Convert combined data into a DataFrame
+if all_jokes:
+    df = pd.DataFrame(all_jokes)
+    print("Jokes DataFrame:")
+    print(df)  # Display the combined DataFrame
 else:
-    print("Failed to retrieve data")
+    print("No jokes retrieved")
     exit()
 
-# Connect to PostgreSQL
+# PostgreSQL connection details
+db_config = {
+    'dbname': 'dwh',  # Replace with your database name
+    'user': 'ikeengr',         # Replace with your username
+    'password': 'DataEngineer247',     # Replace with your password
+    'host': '89.40.0.150',             # Replace with your host (e.g., localhost or an IP address)
+    'port': '5432'                   # Replace with your port (default is 5432)
+}
+
+# Initialize the connection variable
+conn = None
+
 try:
-    conn = psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
-    )
+    # Connect to PostgreSQL
+    conn = psycopg2.connect(**db_config)
     cursor = conn.cursor()
-    print("Connected to PostgreSQL successfully!")
-    
-    # Create table if not exists
+
+    # Create the table if it doesn't exist
     create_table_query = """
-    CREATE TABLE IF NOT EXISTS general_jokes (
+    CREATE TABLE IF NOT EXISTS jokes (
         id SERIAL PRIMARY KEY,
-        type TEXT,
+        joke_id INTEGER UNIQUE,
         setup TEXT,
-        punchline TEXT
+        punchline TEXT,
+        category VARCHAR(50)
     );
     """
     cursor.execute(create_table_query)
     conn.commit()
-    
-    # Insert Data into PostgreSQL
-    insert_query = """
-    INSERT INTO general_jokes (type, setup, punchline) VALUES (%s, %s, %s)
-    """
-    
+
+    # Insert jokes into the table
+    insert_query = sql.SQL("""
+    INSERT INTO jokes (joke_id, setup, punchline, category)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (joke_id) DO NOTHING;
+    """)
+
     for _, row in df.iterrows():
-        cursor.execute(insert_query, (row["type"], row["setup"], row["punchline"]))
-    
+        cursor.execute(insert_query, (row['id'], row['setup'], row['punchline'], row['category']))
+
     conn.commit()
-    print("Data inserted successfully!")
+    print("Data successfully loaded into PostgreSQL database.")
 
 except Exception as e:
-    print("Error:", e)
+    print(f"An error occurred: {e}")
+
 finally:
-    if cursor:
-        cursor.close()
+    # Close the database connection if it was established
     if conn:
+        cursor.close()
         conn.close()
-    print("PostgreSQL connection closed.")
-
-

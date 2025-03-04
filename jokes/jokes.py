@@ -1,83 +1,98 @@
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.hooks.postgres_hook import PostgresHook
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
-import psycopg2
-from psycopg2 import sql
 
-# Define the base URLs for the categories
-urls = {
-    "general": "https://official-joke-api.appspot.com/jokes/general/ten",
-    "programming": "https://official-joke-api.appspot.com/jokes/programming/ten"
+# Define default arguments for the DAG
+default_args = {
+    'owner': 'Ik',
+    'depends_on_past': False,
+    'start_date': datetime(2025, 3, 4),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
 }
 
-# Fetch jokes from multiple categories
-all_jokes = []
-for category, url in urls.items():
-    response = requests.get(url)
-    if response.status_code == 200:
-        jokes = response.json()
-        for joke in jokes:
-            joke['category'] = category  # Add a category label to each joke
-        all_jokes.extend(jokes)
+# Define the DAG
+dag = DAG(
+    'jokes_to_postgres',
+    default_args=default_args,
+    description='Fetch jokes and load them to PostgreSQL every hour',
+    schedule_interval='@hourly',
+)
+
+def fetch_jokes():
+    # Define the base URLs for the categories
+    urls = {
+        "general": "https://official-joke-api.appspot.com/jokes/general/ten",
+        "programming": "https://official-joke-api.appspot.com/jokes/programming/ten"
+    }
+
+    # Fetch jokes from multiple categories
+    all_jokes = []
+    for category, url in urls.items():
+        response = requests.get(url)
+        if response.status_code == 200:
+            jokes = response.json()
+            for joke in jokes:
+                joke['category'] = category  # Add a category label to each joke
+            all_jokes.extend(jokes)
+        else:
+            print(f"Failed to retrieve data from {category} category")
+
+    # Convert combined data into a DataFrame
+    if all_jokes:
+        df = pd.DataFrame(all_jokes)
+        return df
     else:
-        print(f"Failed to retrieve data from {category} category")
+        print("No jokes retrieved")
+        return None
 
-# Convert combined data into a DataFrame
-if all_jokes:
-    df = pd.DataFrame(all_jokes)
-    print("Jokes DataFrame:")
-    print(df)  # Display the combined DataFrame
-else:
-    print("No jokes retrieved")
-    exit()
+def load_to_postgres(df):
+    if df is not None:
+        # Initialize PostgresHook
+        postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
 
-# PostgreSQL connection details
-db_config = {
-    'dbname': 'dwh',  # Replace with your database name
-    'user': 'ikeengr',         # Replace with your username
-    'password': 'DataEngineer247',     # Replace with your password
-    'host': '89.40.0.150',             # Replace with your host (e.g., localhost or an IP address)
-    'port': '5432'                   # Replace with your port (default is 5432)
-}
+        # Create the table if it doesn't exist
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS jokes (
+            id SERIAL PRIMARY KEY,
+            joke_id INTEGER UNIQUE,
+            setup TEXT,
+            punchline TEXT,
+            category VARCHAR(50)
+        );
+        """
+        postgres_hook.run(create_table_query)
 
-# Initialize the connection variable
-conn = None
+        # Insert jokes into the table
+        insert_query = """
+        INSERT INTO jokes (joke_id, setup, punchline, category)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (joke_id) DO NOTHING;
+        """
+        rows = [tuple(x) for x in df[['id', 'setup', 'punchline', 'category']].values]
+        postgres_hook.insert_rows(table='jokes', rows=rows, target_fields=['joke_id', 'setup', 'punchline', 'category'], commit_every=1000)
 
-try:
-    # Connect to PostgreSQL
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
+        print("Data successfully loaded into PostgreSQL database.")
+    else:
+        print("No data to load")
 
-    # Create the table if it doesn't exist
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS jokes (
-        id SERIAL PRIMARY KEY,
-        joke_id INTEGER UNIQUE,
-        setup TEXT,
-        punchline TEXT,
-        category VARCHAR(50)
-    );
-    """
-    cursor.execute(create_table_query)
-    conn.commit()
+# Define the tasks
+fetch_task = PythonOperator(
+    task_id='fetch_jokes',
+    python_callable=fetch_jokes,
+    dag=dag,
+)
 
-    # Insert jokes into the table
-    insert_query = sql.SQL("""
-    INSERT INTO jokes (joke_id, setup, punchline, category)
-    VALUES (%s, %s, %s, %s)
-    ON CONFLICT (joke_id) DO NOTHING;
-    """)
+load_task = PythonOperator(
+    task_id='load_to_postgres',
+    python_callable=lambda: load_to_postgres(fetch_task.output),
+    dag=dag,
+)
 
-    for _, row in df.iterrows():
-        cursor.execute(insert_query, (row['id'], row['setup'], row['punchline'], row['category']))
-
-    conn.commit()
-    print("Data successfully loaded into PostgreSQL database.")
-
-except Exception as e:
-    print(f"An error occurred: {e}")
-
-finally:
-    # Close the database connection if it was established
-    if conn:
-        cursor.close()
-        conn.close()
+# Set the task dependencies
+fetch_task >> load_task

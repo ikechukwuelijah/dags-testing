@@ -1,11 +1,30 @@
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.hooks.postgres_hook import PostgresHook
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
-import psycopg2
-from psycopg2 import sql
-from psycopg2.extras import DictCursor
-import time  # Importing time module to add a delay between requests
+import time
 
-# Step 1: Fetch Multiple Quotes from the API with Rate Limiting
+# Define default arguments for the DAG
+default_args = {
+    'owner': 'IK',
+    'depends_on_past': False,
+    'start_date': datetime(2025, 3, 4),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+# Define the DAG
+dag = DAG(
+    'quotes_to_postgres',
+    default_args=default_args,
+    description='Fetch quotes and load them to PostgreSQL every hour',
+    schedule_interval='@hourly',
+)
+
 def fetch_quotes(num_quotes=10, delay_seconds=2):
     url = "https://quotes15.p.rapidapi.com/quotes/random/"
     querystring = {"language_code": "en"}
@@ -47,40 +66,15 @@ def fetch_quotes(num_quotes=10, delay_seconds=2):
 
     return all_quotes
 
-
-# Step 2: Transform Data into a DataFrame
 def transform_data(quote_data):
     if not quote_data:
         return None  # No data fetched
     return pd.DataFrame(quote_data)
 
+def load_data_to_postgres(df):
+    if df is not None and not df.empty:
+        postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
 
-# Step 3: Load Data into PostgreSQL Database using psycopg2
-def load_data(df):
-    if df is None or df.empty:
-        print("No data to insert.")
-        return
-
-    # Database connection details
-    db_username = "ikeengr"
-    db_password = "DataEngineer247"
-    db_host = "89.40.0.150"  # Change to your actual database host
-    db_port = "5432"
-    db_name = "dwh"
-
-    try:
-        # Establish connection to the PostgreSQL database
-        connection = psycopg2.connect(
-            dbname=db_name,
-            user=db_username,
-            password=db_password,
-            host=db_host,
-            port=db_port
-        )
-        connection.autocommit = False  # Disable autocommit for safe transaction handling
-        cursor = connection.cursor(cursor_factory=DictCursor)
-
-        # Step 4: Ensure the table and column exist
         # Ensure the 'quotes' table exists with the required 'tags' column
         create_table_query = """
         CREATE TABLE IF NOT EXISTS quotes (
@@ -90,8 +84,7 @@ def load_data(df):
             tags TEXT
         );
         """
-        cursor.execute(create_table_query)
-        print("Table 'quotes' created/checked successfully.")
+        postgres_hook.run(create_table_query)
 
         # Alter table to add 'tags' column if it doesn't exist (for safety)
         alter_table_query = """
@@ -102,38 +95,37 @@ def load_data(df):
             END IF;
         END $$;
         """
-        cursor.execute(alter_table_query)
-        print("Checked and ensured 'tags' column exists.")
+        postgres_hook.run(alter_table_query)
 
-        # Step 5: Insert data using ON CONFLICT (Prevents duplicate entries)
+        # Insert data using ON CONFLICT (Prevents duplicate entries)
         insert_query = """
         INSERT INTO quotes (id, content, author, tags)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (id) DO NOTHING;
         """
+        rows = [tuple(x) for x in df[['id', 'content', 'author', 'tags']].values]
+        postgres_hook.insert_rows(table='quotes', rows=rows, target_fields=['id', 'content', 'author', 'tags'], commit_every=1000)
 
-        for _, row in df.iterrows():
-            if row["id"] is not None:  # Ensure ID is valid
-                cursor.execute(insert_query, (row["id"], row["content"], row["author"], row["tags"]))
-                print(f"Inserted row with id={row['id']}")
-            else:
-                print("Skipping insert: ID is None")
+# Define the tasks
+fetch_task = PythonOperator(
+    task_id='fetch_quotes',
+    python_callable=fetch_quotes,
+    dag=dag,
+)
 
-        # Commit the transaction
-        connection.commit()
-        print("Data successfully inserted.")
+transform_task = PythonOperator(
+    task_id='transform_data',
+    python_callable=transform_data,
+    op_kwargs={'quote_data': '{{ task_instance.xcom_pull(task_ids="fetch_quotes") }}'},
+    dag=dag,
+)
 
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        connection.rollback()  # Rollback if error occurs
-    finally:
-        cursor.close()
-        connection.close()  # Close the connection
+load_task = PythonOperator(
+    task_id='load_data_to_postgres',
+    python_callable=load_data_to_postgres,
+    op_kwargs={'df': '{{ task_instance.xcom_pull(task_ids="transform_data") }}'},
+    dag=dag,
+)
 
-
-# Run the pipeline
-if __name__ == "__main__":
-    num_quotes_to_fetch = 10  # Set how many quotes you want to fetch
-    all_quote_data = fetch_quotes(num_quotes=num_quotes_to_fetch, delay_seconds=2)  # Adding delay to avoid 429 errors
-    df = transform_data(all_quote_data)
-    load_data(df)
+# Set the task dependencies
+fetch_task >> transform_task >> load_task

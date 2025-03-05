@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import requests
 import pandas as pd
 
-# Define default arguments for the DAG
+# Default DAG arguments
 default_args = {
     'owner': 'Ik',
     'depends_on_past': False,
@@ -16,7 +16,6 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# Define the DAG
 dag = DAG(
     'jokes_to_postgres',
     default_args=default_args,
@@ -24,39 +23,41 @@ dag = DAG(
     schedule_interval='@hourly',
 )
 
-def fetch_jokes():
-    # Define the base URLs for the categories
+def fetch_jokes(**kwargs):
     urls = {
         "general": "https://official-joke-api.appspot.com/jokes/general/ten",
         "programming": "https://official-joke-api.appspot.com/jokes/programming/ten"
     }
-
-    # Fetch jokes from multiple categories
+    
     all_jokes = []
     for category, url in urls.items():
         response = requests.get(url)
         if response.status_code == 200:
             jokes = response.json()
             for joke in jokes:
-                joke['category'] = category  # Add a category label to each joke
+                joke['category'] = category
             all_jokes.extend(jokes)
         else:
-            print(f"Failed to retrieve data from {category} category")
+            print(f"Failed to retrieve jokes from {category} category")
 
-    # Convert combined data into a DataFrame
     if all_jokes:
-        df = pd.DataFrame(all_jokes)
-        return df
+        # Push the jokes as a JSON-serializable list
+        kwargs['ti'].xcom_push(key='jokes_data', value=all_jokes)
     else:
         print("No jokes retrieved")
-        return None
 
-def load_to_postgres(df):
-    if df is not None:
+def load_to_postgres(**kwargs):
+    # Pull jokes from XCom
+    ti = kwargs['ti']
+    jokes_data = ti.xcom_pull(task_ids='fetch_jokes', key='jokes_data')
+
+    if jokes_data:
+        df = pd.DataFrame(jokes_data)
+
         # Initialize PostgresHook
         postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
 
-        # Create the table if it doesn't exist
+        # Create table if it doesn't exist
         create_table_query = """
         CREATE TABLE IF NOT EXISTS jokes (
             id SERIAL PRIMARY KEY,
@@ -68,7 +69,7 @@ def load_to_postgres(df):
         """
         postgres_hook.run(create_table_query)
 
-        # Insert jokes into the table
+        # Insert data
         insert_query = """
         INSERT INTO jokes (joke_id, setup, punchline, category)
         VALUES (%s, %s, %s, %s)
@@ -77,22 +78,22 @@ def load_to_postgres(df):
         rows = [tuple(x) for x in df[['id', 'setup', 'punchline', 'category']].values]
         postgres_hook.insert_rows(table='jokes', rows=rows, target_fields=['joke_id', 'setup', 'punchline', 'category'], commit_every=1000)
 
-        print("Data successfully loaded into PostgreSQL database.")
+        print("Data successfully loaded into PostgreSQL.")
     else:
         print("No data to load")
 
-# Define the tasks
 fetch_task = PythonOperator(
     task_id='fetch_jokes',
     python_callable=fetch_jokes,
+    provide_context=True,
     dag=dag,
 )
 
 load_task = PythonOperator(
     task_id='load_to_postgres',
-    python_callable=lambda: load_to_postgres(fetch_task.output),
+    python_callable=load_to_postgres,
+    provide_context=True,
     dag=dag,
 )
 
-# Set the task dependencies
 fetch_task >> load_task

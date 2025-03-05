@@ -19,7 +19,7 @@ dag = DAG(
     'metal_prices',
     default_args=default_args,
     description='A simple DAG to load metal prices data',
-    schedule_interval='0 */6 * * *',  # Run four times daily
+    schedule_interval='@daily',
     catchup=False,
 )
 

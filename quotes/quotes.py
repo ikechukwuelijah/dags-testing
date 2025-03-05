@@ -6,7 +6,7 @@ import requests
 import pandas as pd
 import time
 
-# Define default arguments for the DAG
+# Default arguments for DAG
 default_args = {
     'owner': 'IK',
     'depends_on_past': False,
@@ -17,7 +17,7 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# Define the DAG
+# Define DAG
 dag = DAG(
     'quotes_to_postgres',
     default_args=default_args,
@@ -25,7 +25,7 @@ dag = DAG(
     schedule_interval='@hourly',
 )
 
-def fetch_quotes(num_quotes=10, delay_seconds=2):
+def fetch_quotes(**kwargs):
     url = "https://quotes15.p.rapidapi.com/quotes/random/"
     querystring = {"language_code": "en"}
     headers = {
@@ -34,98 +34,97 @@ def fetch_quotes(num_quotes=10, delay_seconds=2):
     }
 
     all_quotes = []
-    
-    for _ in range(num_quotes):
+    for _ in range(10):  # Fetch 10 quotes
         try:
             response = requests.get(url, headers=headers, params=querystring)
-            response.raise_for_status()  # Raise an error for bad responses (4xx, 5xx)
-            
-            # Check for 429 status code (Too Many Requests)
+            response.raise_for_status()
+
             if response.status_code == 429:
-                print("Rate limit exceeded. Waiting before retrying...")
-                time.sleep(delay_seconds)  # Delay for a specified time to avoid rate limiting
+                print("Rate limit exceeded. Waiting...")
+                time.sleep(2)
 
             data = response.json()
-            print("API Response:", data)  # Debugging: Print the raw response
-
-            # Extract relevant fields
             quote_data = {
-                "id": data.get("id") or data.get("quoteId"),  # Ensure correct ID extraction
+                "id": data.get("id") or data.get("quoteId"),
                 "content": data.get("content"),
                 "author": data.get("originator", {}).get("name", "Unknown"),
-                "tags": ", ".join(data.get("tags", []))  # Convert list to string
+                "tags": ", ".join(data.get("tags", []))
             }
             all_quotes.append(quote_data)
 
-            # Wait for a brief period to avoid hitting rate limits
-            time.sleep(delay_seconds)  # Add delay after each request to prevent hitting the rate limit
+            time.sleep(2)  # Avoid hitting rate limits
 
         except requests.exceptions.RequestException as e:
             print(f"Error fetching data: {e}")
-            continue  # Skip this request and move to the next one
+            continue
 
-    return all_quotes
+    # Push result to XCom
+    kwargs['ti'].xcom_push(key='quotes_data', value=all_quotes)
 
-def transform_data(quote_data):
+def transform_data(**kwargs):
+    ti = kwargs['ti']
+    quote_data = ti.xcom_pull(task_ids='fetch_quotes', key='quotes_data')
+
     if not quote_data:
-        return None  # No data fetched
-    return pd.DataFrame(quote_data)
+        print("No data received from fetch_quotes")
+        return None
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(quote_data)
+    return df.to_dict(orient='records')  # Convert to JSON-serializable format for XCom
 
-def load_data_to_postgres(df):
-    if df is not None and not df.empty:
-        postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
+def load_data_to_postgres(**kwargs):
+    ti = kwargs['ti']
+    quotes_data = ti.xcom_pull(task_ids='transform_data')
 
-        # Ensure the 'quotes' table exists with the required 'tags' column
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS quotes (
-            id BIGINT PRIMARY KEY,
-            content TEXT NOT NULL,
-            author TEXT,
-            tags TEXT
-        );
-        """
-        postgres_hook.run(create_table_query)
+    if not quotes_data:
+        print("No data to load into PostgreSQL")
+        return
 
-        # Alter table to add 'tags' column if it doesn't exist (for safety)
-        alter_table_query = """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'quotes' AND column_name = 'tags') THEN
-                ALTER TABLE quotes ADD COLUMN tags TEXT;
-            END IF;
-        END $$;
-        """
-        postgres_hook.run(alter_table_query)
+    df = pd.DataFrame(quotes_data)
 
-        # Insert data using ON CONFLICT (Prevents duplicate entries)
-        insert_query = """
-        INSERT INTO quotes (id, content, author, tags)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (id) DO NOTHING;
-        """
-        rows = [tuple(x) for x in df[['id', 'content', 'author', 'tags']].values]
-        postgres_hook.insert_rows(table='quotes', rows=rows, target_fields=['id', 'content', 'author', 'tags'], commit_every=1000)
+    # Initialize PostgresHook
+    postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
 
-# Define the tasks
+    # Ensure the 'quotes' table exists
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS quotes (
+        id BIGINT PRIMARY KEY,
+        content TEXT NOT NULL,
+        author TEXT,
+        tags TEXT
+    );
+    """
+    postgres_hook.run(create_table_query)
+
+    # Insert data
+    insert_query = """
+    INSERT INTO quotes (id, content, author, tags)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (id) DO NOTHING;
+    """
+    rows = [tuple(x) for x in df[['id', 'content', 'author', 'tags']].values]
+    postgres_hook.insert_rows(table='quotes', rows=rows, target_fields=['id', 'content', 'author', 'tags'], commit_every=1000)
+
 fetch_task = PythonOperator(
     task_id='fetch_quotes',
     python_callable=fetch_quotes,
+    provide_context=True,
     dag=dag,
 )
 
 transform_task = PythonOperator(
     task_id='transform_data',
     python_callable=transform_data,
-    op_kwargs={'quote_data': '{{ task_instance.xcom_pull(task_ids="fetch_quotes") }}'},
+    provide_context=True,
     dag=dag,
 )
 
 load_task = PythonOperator(
     task_id='load_data_to_postgres',
     python_callable=load_data_to_postgres,
-    op_kwargs={'df': '{{ task_instance.xcom_pull(task_ids="transform_data") }}'},
+    provide_context=True,
     dag=dag,
 )
 
-# Set the task dependencies
 fetch_task >> transform_task >> load_task

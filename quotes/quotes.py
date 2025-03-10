@@ -28,7 +28,7 @@ with DAG(
     def fetch_quotes():
         url = "https://quotes15.p.rapidapi.com/quotes/random/"
         headers = {
-            "x-rapidapi-key": "YOUR_RAPIDAPI_KEY",  # Secure API key storage recommended
+            "x-rapidapi-key": "7b66ced988msh253ab4a526f3148p1eed78jsn4d8bcaa48242",  # Secure API key storage recommended
             "x-rapidapi-host": "quotes15.p.rapidapi.com"
         }
         response = requests.get(url, headers=headers)

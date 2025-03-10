@@ -44,9 +44,7 @@ with DAG(
         with open('/tmp/jokes.json', 'w') as f:
             json.dump(all_jokes, f)
     
-    # Function to transform data into DataFrame and return i
-#%% step 3
-
+    # Function to transform data into DataFrame and return it
     def transform_jokes():
         with open('/tmp/jokes.json', 'r') as f:
             all_jokes = json.load(f)
@@ -75,6 +73,10 @@ with DAG(
         
         ti = kwargs['ti']
         jokes = ti.xcom_pull(task_ids='transform_jokes')
+        
+        if not jokes:
+            print("No jokes found to insert.")
+            return
         
         insert_query = """
         INSERT INTO jokes (joke_id, setup, punchline, category)

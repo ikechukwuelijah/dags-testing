@@ -17,7 +17,7 @@ default_args = {
 
 # Define the DAG
 with DAG(
-    'fetch_and_store_jokes',
+    'fetch_jokes',
     default_args=default_args,
     description='Fetch jokes from API and store them in PostgreSQL',
     schedule_interval='@daily',
@@ -46,7 +46,7 @@ with DAG(
     
     # Function to transform data into DataFrame and return i
 #%% step 3
-t
+
     def transform_jokes():
         with open('/tmp/jokes.json', 'r') as f:
             all_jokes = json.load(f)

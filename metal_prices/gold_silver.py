@@ -27,7 +27,7 @@ with DAG(
     def fetch_metal_prices():
         url = "https://gold-price-live.p.rapidapi.com/get_metal_prices"
         headers = {
-            "x-rapidapi-key": "YOUR_RAPIDAPI_KEY",  # Store securely in Airflow connections
+            "x-rapidapi-key": "7b66ced988msh253ab4a526f3148p1eed78jsn4d8bcaa48242",  # Store securely in Airflow connections
             "x-rapidapi-host": "gold-price-live.p.rapidapi.com"
         }
         

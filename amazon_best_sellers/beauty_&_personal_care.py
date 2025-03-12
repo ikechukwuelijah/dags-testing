@@ -17,7 +17,7 @@ default_args = {
 dag = DAG(
     'amazon_beauty_personal_care_products_etl',
     default_args=default_args,
-    description='Daily ETL for Amazon Home & Kitchen Products',
+    description='Daily ETL for Amazon Beauty & Personal Care Best Sellers',
     schedule_interval='@daily',
     catchup=False
 )

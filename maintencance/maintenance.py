@@ -1,4 +1,4 @@
-# Single Airflow DAG for all maintenance tasks (Logs/XCom/ Vacuum)
+# Single Airflow DAG for all maintenance tasks (Logs/XCom/Vacuum)
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -12,14 +12,16 @@ from airflow.utils.db import provide_session
 from sqlalchemy import create_engine, text
 
 # Retrieve Airflow Variables
-AIRFLOW_LOGS_DIR = Variable.get("airflow_logs_dir", default_var="/opt/airflow/logs")
-POSTGRES_CONN_URI = Variable.get("postgres_conn_uri", default_var="postgresql+psycopg2://username:password@localhost:5432/airflow")
-RETENTION_DAYS = int(Variable.get("retention_days", default_var=7))
+AIRFLOW_LOGS_DIR = Variable.get("airflow_logs_dir")
+POSTGRES_CONN_URI = Variable.get("postgres_conn_uri")
+RETENTION_DAYS = int(Variable.get("retention_days", default_var=6))
 
 # Cleanup Logs
 
 def cleanup_logs():
     cutoff_ts = days_ago(RETENTION_DAYS).timestamp()
+    deleted_files_count = 0
+    deleted_dirs_count = 0
 
     for root, dirs, files in os.walk(AIRFLOW_LOGS_DIR, topdown=False):
         for file in files:
@@ -27,21 +29,27 @@ def cleanup_logs():
             # Compare modification time
             if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_ts:
                 os.remove(file_path)
-                logging.info(f"Deleted old log file: {file_path}")
+                deleted_files_count += 1
         # Remove empty directories after deleting files
-        for dir in dirs:
-            dir_path = os.path.join(root, dir)
+        for dir_name in dirs:
+            dir_path = os.path.join(root, dir_name)
             if not os.listdir(dir_path):
                 shutil.rmtree(dir_path)
-                logging.info(f"Deleted empty directory: {dir_path}")
+                deleted_dirs_count += 1
+
+    logging.info(f"Deleted {deleted_files_count} old log files and {deleted_dirs_count} empty directories.")
 
 # Cleanup XCom
 @provide_session
 def cleanup_xcom(session=None):
-    # All XCom records older than 7 days
-    session.query(XCom).filter(XCom.execution_date < days_ago(RETENTION_DAYS)).delete(synchronize_session=False)
+    # Query old XCom records older than RETENTION_DAYS
+    older_xcom_query = session.query(XCom).filter(XCom.execution_date < days_ago(RETENTION_DAYS))
+    count_deleted = older_xcom_query.count()
+
+    # Delete them
+    older_xcom_query.delete(synchronize_session=False)
     session.commit()
-    logging.info("Deleted old XCom entries.")
+    logging.info(f"Deleted {count_deleted} old XCom entries.")
 
 # Vacuum & Analyze for PostgreSQL
 

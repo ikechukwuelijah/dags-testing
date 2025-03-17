@@ -1,72 +1,94 @@
-
-#%% fetch data from api
+from airflow import DAG
+from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+from datetime import timedelta
 import requests
 import pandas as pd
-import psycopg2
 
-# API details
-url = "https://job-posting-feed-api.p.rapidapi.com/active-ats-meili"
-querystring = {
-    "search": "Data Engineer",
-    "title_search": "true",
-    "description_type": "html",
-    "location_filter": "Canada"
-}
-headers = {
-    "x-rapidapi-key": "b138837176msh66610dbb568050ap1aec3ejsn32d522c6ac16",
-    "x-rapidapi-host": "job-posting-feed-api.p.rapidapi.com"
+# Define default arguments for the DAG
+default_args = {
+    'owner': 'Ik',
+    'depends_on_past': False,
+    'start_date': days_ago(1),  # Runs from yesterday
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
 }
 
-# Make the API request
-response = requests.get(url, headers=headers, params=querystring)
+# Define DAG with a weekly schedule
+dag = DAG(
+    'ca_job_postings',
+    default_args=default_args,
+    description='Fetch job postings from API and load into PostgreSQL using XCom',
+    schedule_interval="@weekly",  # Runs every week
+    catchup=False
+)
 
-print(response.json())
+# Task 1: Fetch data from API and store in XCom
+def fetch_data_from_api(**kwargs):
+    url = "https://job-posting-feed-api.p.rapidapi.com/active-ats-meili"
+    querystring = {
+        "search": "Data Engineer",
+        "title_search": "true",
+        "description_type": "html",
+        "location_filter": "Canada"
+    }
+    headers = {
+        "x-rapidapi-key": "b138837176msh66610dbb568050ap1aec3ejsn32d522c6ac16",
+        "x-rapidapi-host": "job-posting-feed-api.p.rapidapi.com"
+    }
+    
+    response = requests.get(url, headers=headers, params=querystring)
 
-# transform data to dataframe
-#%%
-# Extract JSON response
-data = response.json()
+    if response.status_code == 200:
+        data = response.json()
+        kwargs['ti'].xcom_push(key='job_postings_raw', value=data['hits'])
+        return "Data fetched and stored in XCom"
+    else:
+        raise Exception(f"API request failed with status code {response.status_code}")
 
-# Check if 'hits' key exists and is a list
-if 'hits' in data and isinstance(data['hits'], list):
-    job_postings = data['hits']
+# Task 2: Transform data using Pandas
+def transform_data(**kwargs):
+    ti = kwargs['ti']
+    raw_data = ti.xcom_pull(task_ids='fetch_data_from_api', key='job_postings_raw')
 
-    # Extract relevant fields while handling missing data
-    flattened_postings = []
-    for job in job_postings:
-        flattened_postings.append({
-            'job_title': job.get('title', ''),  # Job title
-            'locations': ', '.join(job.get('locations_derived', [''])),  # Join multiple locations
-            'date_posted': job.get('date_posted', None)  # Date posted
+    if not raw_data:
+        raise ValueError("No data received from XCom")
+
+    # Convert JSON to DataFrame
+    job_postings = []
+    for job in raw_data:
+        job_postings.append({
+            'job_title': job.get('title', ''),
+            'locations': ', '.join(job.get('locations_derived', [''])),
+            'date_posted': job.get('date_posted', None)
         })
 
-    # Convert to DataFrame
-    df = pd.DataFrame(flattened_postings)
-    print("DataFrame Created:\n", df.head())
+    df = pd.DataFrame(job_postings)
 
-else:
-    print("Warning: 'hits' key not found or not a list in API response.")
-    print("Actual Response:", data)
-    df = pd.DataFrame()  # Create an empty DataFrame
+    # Convert DataFrame to list of dictionaries for XCom
+    transformed_data = df.to_dict(orient='records')
+    ti.xcom_push(key='transformed_job_data', value=transformed_data)
 
+    return "Data transformed and stored in XCom"
 
+# Task 3: Load data into PostgreSQL using PostgresHook
+def load_data_to_postgres(**kwargs):
+    ti = kwargs['ti']
+    transformed_data = ti.xcom_pull(task_ids='transform_data', key='transformed_job_data')
 
-#%% load data to postgresql 
-# Database connection details
-db_params = {
-    "dbname": "dwh",
-    "user": "ikeengr",
-    "password": "DataEngineer247",
-    "host": "89.40.0.150",
-    "port": "5432"
-}
+    if not transformed_data:
+        raise ValueError("No transformed data received from XCom")
 
-# Connect to PostgreSQL and insert data
-try:
-    conn = psycopg2.connect(**db_params)
+    # Establish PostgreSQL connection using PostgresHook
+    postgres_hook = PostgresHook(postgres_conn_id="postgres_dwh")
+    conn = postgres_hook.get_conn()
     cursor = conn.cursor()
 
-    # Create table if it does not exist
+    # Create table if not exists
     create_table_query = """
     CREATE TABLE IF NOT EXISTS job_postings (
         id SERIAL PRIMARY KEY,
@@ -79,35 +101,44 @@ try:
     cursor.execute(create_table_query)
     conn.commit()
 
-    # Insert data into table if df is not empty
-    if not df.empty:
-        insert_query = """
-        INSERT INTO job_postings (job_title, locations, date_posted)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (job_title, locations, date_posted) DO NOTHING;
-        """
+    # Insert data into table
+    insert_query = """
+    INSERT INTO job_postings (job_title, locations, date_posted)
+    VALUES (%s, %s, %s)
+    ON CONFLICT (job_title, locations, date_posted) DO NOTHING;
+    """
 
-        # Convert DataFrame rows to list of tuples, replacing NaN with None for SQL
-        records = df.replace({pd.NA: None}).values.tolist()
+    # Convert transformed data into tuples for insertion
+    records = [(job['job_title'], job['locations'], job['date_posted']) for job in transformed_data]
 
-        # Execute batch insert
-        cursor.executemany(insert_query, records)
-        conn.commit()
+    cursor.executemany(insert_query, records)
+    conn.commit()
 
-        print(f"Inserted {cursor.rowcount} records successfully.")
-    else:
-        print("No data to insert into the database.")
+    cursor.close()
+    conn.close()
+    return "Data loaded into PostgreSQL successfully"
 
-except psycopg2.Error as db_error:
-    print("Database error:", db_error)
+# Define Airflow tasks
+fetch_task = PythonOperator(
+    task_id='fetch_data_from_api',
+    python_callable=fetch_data_from_api,
+    provide_context=True,
+    dag=dag
+)
 
-except Exception as e:
-    print("Error:", e)
+transform_task = PythonOperator(
+    task_id='transform_data',
+    python_callable=transform_data,
+    provide_context=True,
+    dag=dag
+)
 
-finally:
-    if 'cursor' in locals():
-        cursor.close()
-    if 'conn' in locals():
-        conn.close()
+load_task = PythonOperator(
+    task_id='load_data_to_postgres',
+    python_callable=load_data_to_postgres,
+    provide_context=True,
+    dag=dag
+)
 
- # %%
+# Define task dependencies
+fetch_task >> transform_task >> load_task

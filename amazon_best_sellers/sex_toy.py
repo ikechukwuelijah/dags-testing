@@ -1,92 +1,139 @@
-#%%
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 import requests
-import json
 import pandas as pd
-import psycopg2
+import json
+from datetime import datetime, timedelta
 
-url = "https://real-time-amazon-data.p.rapidapi.com/search"
-
-querystring = {"query":"sex_toys","page":"1","country":"US","sort_by":"BEST_SELLERS","product_condition":"ALL","is_prime":"false","deals_and_discounts":"NONE"}
-
-headers = {
-	"x-rapidapi-key": "f38eae887bmsh5211e33c97c1c50p125cafjsnec52eb060a05",
-	"x-rapidapi-host": "real-time-amazon-data.p.rapidapi.com"
+# Default DAG arguments
+default_args = {
+    "owner": "Ik",
+    "depends_on_past": False,
+    "start_date": datetime(2025, 3, 18),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
-response = requests.get(url, headers=headers, params=querystring)
+# Initialize DAG
+dag = DAG(
+    "amazon_best_sellers_st",
+    default_args=default_args,
+    description="Extract data from Amazon API and load into PostgreSQL",
+    schedule_interval="0 0 * * 0",  # Runs weekly on Sunday at midnight
+    catchup=False,
+)
 
-print(response.json())
-# %%
-# Convert response to JSON
-data = response.json()
+# Step 1: Extract data from API
+def extract_data(**kwargs):
+    url = "https://real-time-amazon-data.p.rapidapi.com/search"
+    querystring = {
+        "query": "sex_toys",
+        "page": "1",
+        "country": "US",
+        "sort_by": "BEST_SELLERS",
+        "product_condition": "ALL",
+        "is_prime": "false",
+        "deals_and_discounts": "NONE"
+    }
+    headers = {
+        "x-rapidapi-key": "f38eae887bmsh5211e33c97c1c50p125cafjsnec52eb060a05",
+        "x-rapidapi-host": "real-time-amazon-data.p.rapidapi.com"
+    }
 
-# Extract product data
-products = data.get("data", {}).get("products", [])
+    response = requests.get(url, headers=headers, params=querystring)
+    data = response.json()
 
-# Convert to DataFrame
-df = pd.DataFrame(products)
+    # Push raw data to XCom
+    kwargs['ti'].xcom_push(key="raw_data", value=data)
 
-# Display the DataFrame
-print(df.head())
+extract_task = PythonOperator(
+    task_id="extract_data",
+    python_callable=extract_data,
+    provide_context=True,
+    dag=dag,
+)
 
-# %%
-# Database connection details
-DB_NAME = "dwh"
-DB_USER = "ikeengr"
-DB_PASSWORD = "DataEngineer247"
-DB_HOST = "89.40.0.150"  # Example: "localhost" or cloud instance
-DB_PORT = "5432"  # Default PostgreSQL port
+# Step 2: Transform data
+def transform_data(**kwargs):
+    ti = kwargs['ti']
+    raw_data = ti.xcom_pull(task_ids="extract_data", key="raw_data")
 
-# Connect to PostgreSQL
-try:
-    conn = psycopg2.connect(
-        dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
-    )
+    # Extract product data
+    products = raw_data.get("data", {}).get("products", [])
+    df = pd.DataFrame(products)
+
+    # Select required columns
+    df = df[["asin", "product_title", "product_price", "product_star_rating", 
+             "product_num_ratings", "product_url", "product_photo", "sales_volume", "delivery"]]
+
+    # Convert DataFrame to JSON string for XCom
+    transformed_data = df.to_json(orient="records")
+    ti.xcom_push(key="transformed_data", value=transformed_data)
+
+transform_task = PythonOperator(
+    task_id="transform_data",
+    python_callable=transform_data,
+    provide_context=True,
+    dag=dag,
+)
+
+# Step 3: Load data into PostgreSQL
+def load_data(**kwargs):
+    ti = kwargs['ti']
+    transformed_data = ti.xcom_pull(task_ids="transform_data", key="transformed_data")
+    df = pd.read_json(transformed_data)
+
+    # Connect to PostgreSQL
+    pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")  # Ensure you have this connection set up in Airflow
+    conn = pg_hook.get_conn()
     cursor = conn.cursor()
-    print("Connected to the database successfully!")
-except Exception as e:
-    print("Error connecting to the database:", e)
-    exit()
 
-# Create table if it doesn't exist
-create_table_query = """
-CREATE TABLE IF NOT EXISTS amazon_sex_toy_products (
-    asin TEXT PRIMARY KEY,
-    product_title TEXT,
-    product_price TEXT,
-    product_star_rating TEXT,
-    product_num_ratings INTEGER,
-    product_url TEXT,
-    product_photo TEXT,
-    sales_volume TEXT,
-    delivery TEXT
-);
-"""
-cursor.execute(create_table_query)
-conn.commit()
-
-# Insert data into PostgreSQL
-for _, row in df.iterrows():
-    insert_query = """
-    INSERT INTO amazon_sex_toy_products (
-        asin, product_title, product_price, product_star_rating, 
-        product_num_ratings, product_url, product_photo, sales_volume, delivery
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (asin) DO NOTHING;
+    # Create table if not exists
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS amazon_sex_toy_products (
+        asin TEXT PRIMARY KEY,
+        product_title TEXT,
+        product_price TEXT,
+        product_star_rating TEXT,
+        product_num_ratings INTEGER,
+        product_url TEXT,
+        product_photo TEXT,
+        sales_volume TEXT,
+        delivery TEXT
+    );
     """
-    values = (
-        row["asin"], row["product_title"], row["product_price"],
-        row["product_star_rating"], row["product_num_ratings"],
-        row["product_url"], row["product_photo"], row["sales_volume"],
-        row["delivery"]
-    )
-    
-    cursor.execute(insert_query, values)
+    cursor.execute(create_table_query)
+    conn.commit()
 
-# Commit and close connection
-conn.commit()
-cursor.close()
-conn.close()
-print("Data successfully inserted into PostgreSQL!")
+    # Insert data
+    for _, row in df.iterrows():
+        insert_query = """
+        INSERT INTO amazon_sex_toy_products (
+            asin, product_title, product_price, product_star_rating, 
+            product_num_ratings, product_url, product_photo, sales_volume, delivery
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (asin) DO NOTHING;
+        """
+        values = (
+            row["asin"], row["product_title"], row["product_price"],
+            row["product_star_rating"], row["product_num_ratings"],
+            row["product_url"], row["product_photo"], row["sales_volume"],
+            row["delivery"]
+        )
+        cursor.execute(insert_query, values)
 
-# %%
+    # Commit and close connection
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+load_task = PythonOperator(
+    task_id="load_data",
+    python_callable=load_data,
+    provide_context=True,
+    dag=dag,
+)
+
+# Define DAG flow
+extract_task >> transform_task >> load_task

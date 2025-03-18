@@ -67,7 +67,7 @@ def load_data(**kwargs):
         return
 
     # Define Postgres connection
-    pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")
+    pg_hook = PostgresHook(postgres_conn_id="postgres_default")
 
     # Ensure the table exists
     create_table_query = """
@@ -81,45 +81,23 @@ def load_data(**kwargs):
         climate TEXT,
         image_url TEXT,
         zone TEXT,
-        UNIQUE (latin_name, zone)  -- Prevent duplicate inserts
+        UNIQUE (latin_name, zone)
     );
     """
     pg_hook.run(create_table_query)
 
-    # Insert data into PostgreSQL
+    # Insert data into PostgreSQL with ON CONFLICT
     insert_query = """
     INSERT INTO house_plants (category, common_name, latin_name, family, origin, climate, image_url, zone)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES %s
     ON CONFLICT (latin_name, zone) DO NOTHING;
     """
+
     values = [(record['category'], record['common_name'], record['latin_name'], record['family'], 
                record['origin'], record['climate'], record['image_url'], record['zone']) for record in records]
 
-    pg_hook.insert_rows("house_plants", values, target_fields=['category', 'common_name', 'latin_name', 'family', 'origin', 'climate', 'image_url', 'zone'])
+    # Use pg_hook.run() with executemany support
+    pg_hook.run(insert_query, parameters=(values,), autocommit=True)
 
     print("Data successfully loaded into PostgreSQL!")
 
-# Define Tasks
-fetch_task = PythonOperator(
-    task_id="fetch_data",
-    python_callable=fetch_data,
-    provide_context=True,
-    dag=dag
-)
-
-transform_task = PythonOperator(
-    task_id="transform_data",
-    python_callable=transform_data,
-    provide_context=True,
-    dag=dag
-)
-
-load_task = PythonOperator(
-    task_id="load_data",
-    python_callable=load_data,
-    provide_context=True,
-    dag=dag
-)
-
-# Task Dependencies
-fetch_task >> transform_task >> load_task

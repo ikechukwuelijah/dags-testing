@@ -52,6 +52,9 @@ def transform_data(**kwargs):
     df['date_posted'] = df['date_posted'].str.replace(r'\+00:00$', '', regex=True)  # Remove timezone
     df['date_posted'] = pd.to_datetime(df['date_posted'], errors='coerce')
 
+    # Convert Timestamp to string to avoid XCom serialization issue
+    df['date_posted'] = df['date_posted'].dt.strftime('%Y-%m-%d')  # Converts NaT to None automatically
+
     # Extract first location
     df['location'] = df['locations_derived'].apply(lambda x: x[0] if isinstance(x, list) and x else None)
 
@@ -63,6 +66,7 @@ def transform_data(**kwargs):
 
     # Push transformed data to XCom
     ti.xcom_push(key='transformed_data', value=df_json)
+
 
 # Step 3: Load data into PostgreSQL
 def load_to_postgres(**kwargs):
@@ -89,31 +93,10 @@ def load_to_postgres(**kwargs):
         VALUES (%s, %s, %s)
     """
     
-    records = [(row['title'], row['location'], row['date_posted']) if row['date_posted'] else None for row in transformed_data]
+    records = [
+        (row['title'], row['location'], row['date_posted'] if row['date_posted'] else None) 
+        for row in transformed_data
+    ]
 
     pg_hook.insert_rows('us_de_jobs', records, target_fields=['title', 'location', 'date_posted'])
 
-# Define tasks
-fetch_task = PythonOperator(
-    task_id='fetch_job_postings',
-    python_callable=fetch_job_postings,
-    provide_context=True,
-    dag=dag
-)
-
-transform_task = PythonOperator(
-    task_id='transform_data',
-    python_callable=transform_data,
-    provide_context=True,
-    dag=dag
-)
-
-load_task = PythonOperator(
-    task_id='load_to_postgres',
-    python_callable=load_to_postgres,
-    provide_context=True,
-    dag=dag
-)
-
-# Task dependencies
-fetch_task >> transform_task >> load_task

@@ -5,22 +5,22 @@ from airflow.utils.dates import days_ago
 import requests
 import pandas as pd
 
-# API Configuration
+# API Details
 API_URL = "https://the-weed-db.p.rapidapi.com/api/strains"
 API_HEADERS = {
     "x-rapidapi-key": "f38eae887bmsh5211e33c97c1c50p125cafjsnec52eb060a05",
     "x-rapidapi-host": "the-weed-db.p.rapidapi.com"
 }
 
-# DAG Definition
+# Define the DAG
 with DAG(
-    "easy_grow_strains_etl",
-    schedule_interval="0 0 1 * *",  # Runs monthly on the 1st at midnight
+    "grow_medium_strain_etl",
+    schedule_interval="0 0 1 * *",  # Runs monthly on the 1st day at midnight
     start_date=days_ago(1),
     catchup=False,
     tags=["ETL", "PostgreSQL"],
     default_args={
-        "owner": "ikeengr",  # ✅ DAG Owner Set
+        "owner": "ikeengr",  # 👈 DAG owner added
         "depends_on_past": False,
         "retries": 1,
     }
@@ -28,8 +28,8 @@ with DAG(
 
     @task()
     def extract_data():
-        """Extracts 'easy grow' strains from API and returns JSON via XCom."""
-        response = requests.get(API_URL, headers=API_HEADERS, params={"growDifficulty": "easy"})
+        """Extracts data from API and returns as JSON (stored in XCom)."""
+        response = requests.get(API_URL, headers=API_HEADERS, params={"growDifficulty": "medium"})
         if response.status_code == 200:
             return response.json()
         else:
@@ -37,9 +37,10 @@ with DAG(
 
     @task()
     def transform_data(data):
-        """Transforms API JSON response into a list of tuples for PostgreSQL."""
+        """Converts API data to a list of tuples for database insertion."""
         df = pd.DataFrame(data)
 
+        # Ensure correct structure for PostgreSQL insertion
         transformed_data = [
             (
                 row.get('_id', None), 
@@ -70,13 +71,13 @@ with DAG(
     @task()
     def load_data(records):
         """Loads transformed data into PostgreSQL using PostgresHook."""
-        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")  # Airflow Connection ID
+        pg_hook = PostgresHook(postgres_conn_id="postgres_dwh")  # Airflow Connection
         conn = pg_hook.get_conn()
         cur = conn.cursor()
 
-        # Create Table (if not exists)
+        # Create table if not exists
         create_table_query = '''
-        CREATE TABLE IF NOT EXISTS easy_grow_strains (
+        CREATE TABLE IF NOT EXISTS medium_grow_strains (
             id TEXT PRIMARY KEY,
             name TEXT,
             link TEXT,
@@ -103,9 +104,9 @@ with DAG(
         cur.execute(create_table_query)
         conn.commit()
 
-        # Insert Data into Table
+        # Insert data into the table
         insert_query = '''
-        INSERT INTO easy_grow_strains (id, name, link, imageUrl, description, genetics, THC, CBD, 
+        INSERT INTO medium_grow_strains (id, name, link, imageUrl, description, genetics, THC, CBD, 
                                          parents, smellAndFlavour, effect, growEnvironments, growDifficulty, 
                                          floweringType, floweringTime, harvestTimeOutdoor, yieldIndoor, 
                                          yieldOutdoor, heightIndoor, heightOutdoor, fromSeedToHarvest)
@@ -113,7 +114,7 @@ with DAG(
         ON CONFLICT (id) DO NOTHING;
         '''
         
-        # Batch Insert
+        # Execute batch insert
         cur.executemany(insert_query, records)
         conn.commit()
 
@@ -121,7 +122,7 @@ with DAG(
         cur.close()
         conn.close()
 
-    # Task Dependencies
+    # Define Task Dependencies
     raw_data = extract_data()
     transformed_data = transform_data(raw_data)
     load_data(transformed_data)

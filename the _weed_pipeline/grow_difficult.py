@@ -11,10 +11,11 @@ API_HEADERS = {
     "x-rapidapi-key": "f38eae887bmsh5211e33c97c1c50p125cafjsnec52eb060a05",
     "x-rapidapi-host": "the-weed-db.p.rapidapi.com"
 }
+QUERY_PARAMS = {"growDifficulty": "difficult"}
 
 # DAG Definition
 with DAG(
-    "easy_grow_strains_etl",
+    "difficult_grow_strains_etl",
     schedule_interval="0 0 1 * *",  # Runs monthly on the 1st at midnight
     start_date=days_ago(1),
     catchup=False,
@@ -28,8 +29,8 @@ with DAG(
 
     @task()
     def extract_data():
-        """Extracts 'easy grow' strains from API and returns JSON via XCom."""
-        response = requests.get(API_URL, headers=API_HEADERS, params={"growDifficulty": "easy"})
+        """Extracts 'difficult grow' strains from API and returns JSON via XCom."""
+        response = requests.get(API_URL, headers=API_HEADERS, params=QUERY_PARAMS)
         if response.status_code == 200:
             return response.json()
         else:
@@ -76,7 +77,7 @@ with DAG(
 
         # Create Table (if not exists)
         create_table_query = '''
-        CREATE TABLE IF NOT EXISTS easy_grow_strains (
+        CREATE TABLE IF NOT EXISTS difficult_grow_strains (
             id TEXT PRIMARY KEY,
             name TEXT,
             link TEXT,
@@ -105,7 +106,7 @@ with DAG(
 
         # Insert Data into Table
         insert_query = '''
-        INSERT INTO easy_grow_strains (id, name, link, imageUrl, description, genetics, THC, CBD, 
+        INSERT INTO difficult_grow_strains (id, name, link, imageUrl, description, genetics, THC, CBD, 
                                          parents, smellAndFlavour, effect, growEnvironments, growDifficulty, 
                                          floweringType, floweringTime, harvestTimeOutdoor, yieldIndoor, 
                                          yieldOutdoor, heightIndoor, heightOutdoor, fromSeedToHarvest)

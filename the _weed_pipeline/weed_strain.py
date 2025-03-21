@@ -1,70 +1,77 @@
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.utils.dates import days_ago
+from airflow.operators.python_operator import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+import requests
 import pandas as pd
-import logging
-import requests  # Ensure this is imported to fetch data
-from datetime import datetime
-from psycopg2.extras import execute_values
 
-# Logging setup
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# DAG Configuration
+# Default arguments for the DAG
 default_args = {
     'owner': 'ikeengr',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 3, 20),
+    'start_date': days_ago(1),  # Start date set to one day ago
     'retries': 1,
 }
 
+# Define the DAG
 dag = DAG(
     'weed_strain_etl',
     default_args=default_args,
-    schedule_interval='@monthly',
-    catchup=False
+    description='ETL pipeline to extract weed strain data, transform it, and load it into PostgreSQL',
+    schedule_interval='@monthly',  # Updated to run monthly
 )
 
-# ✅ FIX: Define fetch_data function
-def fetch_data(**kwargs):
-    """Fetch strain data from an API and store it in XCom."""
-    api_url = "https://example.com/api/strains"  # Replace with actual API URL
-    response = requests.get(api_url)
+# Task 1: Extract data from the API
+def extract_data(**kwargs):
+    url = "https://weed-strain1.p.rapidapi.com/"
+    querystring = {"ordering": "strain"}
+    headers = {
+        "x-rapidapi-key": "f38eae887bmsh5211e33c97c1c50p125cafjsnec52eb060a05",
+        "x-rapidapi-host": "weed-strain1.p.rapidapi.com"
+    }
+    response = requests.get(url, headers=headers, params=querystring)
+    data = response.json()
+    # Push data to XCom for use in subsequent tasks
+    kwargs['ti'].xcom_push(key='api_data', value=data)
 
-    if response.status_code == 200:
-        strain_data = response.json()
-        kwargs['ti'].xcom_push(key='strain_data', value=strain_data)
-        logging.info("✅ Data fetched successfully.")
-    else:
-        logging.error(f"❌ Failed to fetch data. Status Code: {response.status_code}")
-        raise Exception("Failed to fetch data from API.")
-
-# ✅ Task 1: Fetch Data
-fetch_task = PythonOperator(
-    task_id='fetch_data',
-    python_callable=fetch_data,
-    provide_context=True,
-    dag=dag
-)
-
-# ✅ Task 2: Load Data into PostgreSQL
-def load_data_to_postgres(**kwargs):
-    """Load strain data from XCom into PostgreSQL."""
+# Task 2: Transform data into a Pandas DataFrame
+def transform_data(**kwargs):
+    # Pull data from XCom
     ti = kwargs['ti']
-    data_json = ti.xcom_pull(task_ids='fetch_data', key='strain_data')
+    data = ti.xcom_pull(task_ids='extract_data', key='api_data')
+    
+    # Convert JSON data to DataFrame
+    df = pd.DataFrame(data)
+    
+    # Handle data type issues (e.g., missing values, incorrect types)
+    df.fillna(value={
+        'thc': 'N/A',
+        'cbd': 'N/A',
+        'cbg': 'N/A',
+        'indoorYieldInGramsMax': 0,
+        'outdoorYieldInGramsMax': 0,
+        'floweringWeeksMin': 0,
+        'floweringWeeksMax': 0,
+        'heightInInchesMin': 0,
+        'heightInInchesMax': 0,
+        'imgCreativeCommons': False
+    }, inplace=True)
+    
+    # Push the transformed DataFrame to XCom
+    ti.xcom_push(key='transformed_data', value=df.to_dict(orient='records'))
 
-    if not data_json:
-        logging.error("❌ No data received from fetch_data task.")
-        raise Exception("No data to load.")
-
-    df = pd.DataFrame(data_json)
-
-    # Connect to PostgreSQL
-    pg_hook = PostgresHook(postgres_conn_id='postgres_dwh')
-    conn = pg_hook.get_conn()
+# Task 3: Load data into PostgreSQL
+def load_data_to_postgres(**kwargs):
+    # Pull transformed data from XCom
+    ti = kwargs['ti']
+    data = ti.xcom_pull(task_ids='transform_data', key='transformed_data')
+    df = pd.DataFrame(data)
+    
+    # Use PostgresHook to interact with PostgreSQL
+    postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
+    conn = postgres_hook.get_conn()
     cursor = conn.cursor()
-
-    # Create Table if not Exists
+    
+    # Create table if not exists
     create_table_query = '''
     CREATE TABLE IF NOT EXISTS strains (
         id SERIAL PRIMARY KEY,
@@ -92,79 +99,49 @@ def load_data_to_postgres(**kwargs):
     '''
     cursor.execute(create_table_query)
     conn.commit()
-
-    # Map API Fields to Table Columns
-    column_mapping = {
-        "strain": "strain",
-        "thc": "thc",
-        "cbd": "cbd",
-        "cbg": "cbg",
-        "strainType": "strain_type",
-        "climate": "climate",
-        "difficulty": "difficulty",
-        "fungalResistance": "fungal_resistance",
-        "indoorYieldInGramsMax": "indoor_yield_max",
-        "outdoorYieldInGramsMax": "outdoor_yield_max",
-        "floweringWeeksMin": "flowering_weeks_min",
-        "floweringWeeksMax": "flowering_weeks_max",
-        "heightInInchesMin": "height_inches_min",
-        "heightInInchesMax": "height_inches_max",
-        "goodEffects": "good_effects",
-        "sideEffects": "side_effects",
-        "imgThumb": "img_thumb",
-        "imgAttribution": "img_attribution",
-        "imgAttributionLink": "img_attribution_link",
-        "imgCreativeCommons": "img_creative_commons"
-    }
     
-    df.rename(columns=column_mapping, inplace=True)
-
-    # Convert empty strings to None for numeric fields
-    numeric_columns = [
-        "indoor_yield_max", "outdoor_yield_max", "flowering_weeks_min", 
-        "flowering_weeks_max", "height_inches_min", "height_inches_max"
-    ]
-
-    for col in numeric_columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')  # Convert to float, set errors to NaN
-        df[col] = df[col].replace({pd.NA: None})  # Replace NaN with None
-
-    df.fillna("", inplace=True)  # Replace NaN with empty strings for non-numeric columns
-
-    # Insert Data with Batch Processing
-    insert_query = '''
-    INSERT INTO strains (
-        strain, thc, cbd, cbg, strain_type, climate, difficulty, fungal_resistance,
-        indoor_yield_max, outdoor_yield_max, flowering_weeks_min, flowering_weeks_max,
-        height_inches_min, height_inches_max, good_effects, side_effects, img_thumb,
-        img_attribution, img_attribution_link, img_creative_commons
-    ) VALUES %s
-    ON CONFLICT DO NOTHING;
-    '''
-
-    records = [
-        (
-            row.strain, row.thc, row.cbd, row.cbg, row.strain_type, row.climate, row.difficulty,
-            row.fungal_resistance, row.indoor_yield_max, row.outdoor_yield_max, row.flowering_weeks_min,
-            row.flowering_weeks_max, row.height_inches_min, row.height_inches_max, row.good_effects,
-            row.side_effects, row.img_thumb, row.img_attribution, row.img_attribution_link, row.img_creative_commons
-        )
-        for _, row in df.iterrows()
-    ]
-
-    execute_values(cursor, insert_query, records)
+    # Insert data into the table
+    for _, row in df.iterrows():
+        cursor.execute('''
+            INSERT INTO strains (id, strain, thc, cbd, cbg, strain_type, climate, difficulty, fungal_resistance,
+                                indoor_yield_max, outdoor_yield_max, flowering_weeks_min, flowering_weeks_max,
+                                height_inches_min, height_inches_max, good_effects, side_effects, img_thumb,
+                                img_attribution, img_attribution_link, img_creative_commons)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (
+            row['id'], row['strain'], row['thc'], row['cbd'], row['cbg'], row['strainType'], row['climate'],
+            row['difficulty'], row['fungalResistance'], row['indoorYieldInGramsMax'], row['outdoorYieldInGramsMax'],
+            row['floweringWeeksMin'], row['floweringWeeksMax'], row['heightInInchesMin'], row['heightInInchesMax'],
+            row['goodEffects'], row['sideEffects'], row['imgThumb'], row['imgAttribution'],
+            row['imgAttributionLink'], row['imgCreativeCommons']
+        ))
+    
     conn.commit()
-
     cursor.close()
     conn.close()
-    logging.info("✅ Data successfully loaded into PostgreSQL.")
+    print("Data successfully loaded into PostgreSQL.")
+
+# Define tasks
+extract_task = PythonOperator(
+    task_id='extract_data',
+    python_callable=extract_data,
+    provide_context=True,
+    dag=dag,
+)
+
+transform_task = PythonOperator(
+    task_id='transform_data',
+    python_callable=transform_data,
+    provide_context=True,
+    dag=dag,
+)
 
 load_task = PythonOperator(
     task_id='load_data_to_postgres',
     python_callable=load_data_to_postgres,
     provide_context=True,
-    dag=dag
+    dag=dag,
 )
 
-# ✅ Task Dependencies
-fetch_task >> load_task
+# Set task dependencies
+extract_task >> transform_task >> load_task

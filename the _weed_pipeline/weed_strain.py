@@ -1,30 +1,38 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-import requests
 import pandas as pd
-from psycopg2.extras import execute_values
+import logging
 from datetime import datetime
+from psycopg2.extras import execute_values
 
-# API Request Function
-def fetch_data(**kwargs):
-    url = "https://weed-strain1.p.rapidapi.com/"
-    querystring = {"ordering": "strain"}
-    headers = {
-        "x-rapidapi-key": "f38eae887bmsh5211e33c97c1c50p125cafjsnec52eb060a05",
-        "x-rapidapi-host": "weed-strain1.p.rapidapi.com"
-    }
-    
-    response = requests.get(url, headers=headers, params=querystring)
-    data = response.json()
-    
-    # Convert to DataFrame
-    df = pd.DataFrame(data)
-    
-    # Store data in XCom as JSON
-    kwargs['ti'].xcom_push(key='strain_data', value=df.to_json())
+# Logging setup
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Load Data into PostgreSQL Function
+# DAG Configuration
+default_args = {
+    'owner': 'ikeengr',
+    'depends_on_past': False,
+    'start_date': datetime(2025, 3, 20),
+    'retries': 1,
+}
+
+dag = DAG(
+    'weed_strain_etl',
+    default_args=default_args,
+    schedule_interval='@monthly',
+    catchup=False
+)
+
+# Step 1: Fetch Data (Assume fetch_data() is implemented correctly)
+fetch_task = PythonOperator(
+    task_id='fetch_data',
+    python_callable=fetch_data,
+    provide_context=True,
+    dag=dag
+)
+
+# Step 2: Load Data to PostgreSQL
 def load_data_to_postgres(**kwargs):
     ti = kwargs['ti']
     data_json = ti.xcom_pull(task_ids='fetch_data', key='strain_data')
@@ -89,7 +97,18 @@ def load_data_to_postgres(**kwargs):
     }
     
     df.rename(columns=column_mapping, inplace=True)
-    df.fillna("", inplace=True)  # Replace NaN with empty string
+
+    # Convert empty strings to None for numeric fields
+    numeric_columns = [
+        "indoor_yield_max", "outdoor_yield_max", "flowering_weeks_min", 
+        "flowering_weeks_max", "height_inches_min", "height_inches_max"
+    ]
+
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')  # Convert to float, set errors to NaN
+        df[col] = df[col].replace({pd.NA: None})  # Replace NaN with None
+
+    df.fillna("", inplace=True)  # Replace NaN with empty strings for non-numeric columns
 
     # Insert Data with Batch Processing
     insert_query = '''
@@ -117,30 +136,7 @@ def load_data_to_postgres(**kwargs):
 
     cursor.close()
     conn.close()
-    print("Data successfully loaded into PostgreSQL.")
-
-# DAG Definition
-default_args = {
-    'owner': 'ikeengr',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 3, 20),
-    'retries': 1,
-}
-
-dag = DAG(
-    'weed_strain_etl',
-    default_args=default_args,
-    schedule_interval='@monthly',
-    catchup=False
-)
-
-# Tasks
-fetch_task = PythonOperator(
-    task_id='fetch_data',
-    python_callable=fetch_data,
-    provide_context=True,
-    dag=dag
-)
+    logging.info("✅ Data successfully loaded into PostgreSQL.")
 
 load_task = PythonOperator(
     task_id='load_data_to_postgres',

@@ -3,6 +3,7 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 import pandas as pd
 import logging
+import requests  # Ensure this is imported to fetch data
 from datetime import datetime
 from psycopg2.extras import execute_values
 
@@ -24,7 +25,21 @@ dag = DAG(
     catchup=False
 )
 
-# Step 1: Fetch Data (Assume fetch_data() is implemented correctly)
+# ✅ FIX: Define fetch_data function
+def fetch_data(**kwargs):
+    """Fetch strain data from an API and store it in XCom."""
+    api_url = "https://example.com/api/strains"  # Replace with actual API URL
+    response = requests.get(api_url)
+
+    if response.status_code == 200:
+        strain_data = response.json()
+        kwargs['ti'].xcom_push(key='strain_data', value=strain_data)
+        logging.info("✅ Data fetched successfully.")
+    else:
+        logging.error(f"❌ Failed to fetch data. Status Code: {response.status_code}")
+        raise Exception("Failed to fetch data from API.")
+
+# ✅ Task 1: Fetch Data
 fetch_task = PythonOperator(
     task_id='fetch_data',
     python_callable=fetch_data,
@@ -32,11 +47,17 @@ fetch_task = PythonOperator(
     dag=dag
 )
 
-# Step 2: Load Data to PostgreSQL
+# ✅ Task 2: Load Data into PostgreSQL
 def load_data_to_postgres(**kwargs):
+    """Load strain data from XCom into PostgreSQL."""
     ti = kwargs['ti']
     data_json = ti.xcom_pull(task_ids='fetch_data', key='strain_data')
-    df = pd.read_json(data_json)
+
+    if not data_json:
+        logging.error("❌ No data received from fetch_data task.")
+        raise Exception("No data to load.")
+
+    df = pd.DataFrame(data_json)
 
     # Connect to PostgreSQL
     pg_hook = PostgresHook(postgres_conn_id='postgres_dwh')
@@ -145,5 +166,5 @@ load_task = PythonOperator(
     dag=dag
 )
 
-# Task Dependencies
+# ✅ Task Dependencies
 fetch_task >> load_task

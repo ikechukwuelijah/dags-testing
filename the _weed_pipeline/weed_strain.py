@@ -104,14 +104,35 @@ def load_data_to_postgres(**kwargs):
     for _, row in df.iterrows():
         cursor.execute('''
         INSERT INTO strains (
-            strain, thc, cbd, cbg, strain_type, climate, difficulty, fungal_resistance,
+            id, strain, thc, cbd, cbg, strain_type, climate, difficulty, fungal_resistance,
             indoor_yield_max, outdoor_yield_max, flowering_weeks_min, flowering_weeks_max,
             height_inches_min, height_inches_max, good_effects, side_effects, img_thumb,
             img_attribution, img_attribution_link, img_creative_commons
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            strain = EXCLUDED.strain,
+            thc = EXCLUDED.thc,
+            cbd = EXCLUDED.cbd,
+            cbg = EXCLUDED.cbg,
+            strain_type = EXCLUDED.strain_type,
+            climate = EXCLUDED.climate,
+            difficulty = EXCLUDED.difficulty,
+            fungal_resistance = EXCLUDED.fungal_resistance,
+            indoor_yield_max = EXCLUDED.indoor_yield_max,
+            outdoor_yield_max = EXCLUDED.outdoor_yield_max,
+            flowering_weeks_min = EXCLUDED.flowering_weeks_min,
+            flowering_weeks_max = EXCLUDED.flowering_weeks_max,
+            height_inches_min = EXCLUDED.height_inches_min,
+            height_inches_max = EXCLUDED.height_inches_max,
+            good_effects = EXCLUDED.good_effects,
+            side_effects = EXCLUDED.side_effects,
+            img_thumb = EXCLUDED.img_thumb,
+            img_attribution = EXCLUDED.img_attribution,
+            img_attribution_link = EXCLUDED.img_attribution_link,
+            img_creative_commons = EXCLUDED.img_creative_commons
     ''', (
-        row['strain'], row['thc'], row['cbd'], row['cbg'], row['strainType'], row['climate'],
+        row['id'], row['strain'], row['thc'], row['cbd'], row['cbg'], row['strainType'], row['climate'],
         row['difficulty'], row['fungalResistance'], row['indoorYieldInGramsMax'], row['outdoorYieldInGramsMax'],
         row['floweringWeeksMin'], row['floweringWeeksMax'], row['heightInInchesMin'], row['heightInInchesMax'],
         row['goodEffects'], row['sideEffects'], row['imgThumb'], row['imgAttribution'],

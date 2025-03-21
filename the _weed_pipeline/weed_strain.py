@@ -103,18 +103,20 @@ def load_data_to_postgres(**kwargs):
     # Insert data into the table
     for _, row in df.iterrows():
         cursor.execute('''
-            INSERT INTO strains (id, strain, thc, cbd, cbg, strain_type, climate, difficulty, fungal_resistance,
-                                indoor_yield_max, outdoor_yield_max, flowering_weeks_min, flowering_weeks_max,
-                                height_inches_min, height_inches_max, good_effects, side_effects, img_thumb,
-                                img_attribution, img_attribution_link, img_creative_commons)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (
-            row['id'], row['strain'], row['thc'], row['cbd'], row['cbg'], row['strainType'], row['climate'],
-            row['difficulty'], row['fungalResistance'], row['indoorYieldInGramsMax'], row['outdoorYieldInGramsMax'],
-            row['floweringWeeksMin'], row['floweringWeeksMax'], row['heightInInchesMin'], row['heightInInchesMax'],
-            row['goodEffects'], row['sideEffects'], row['imgThumb'], row['imgAttribution'],
-            row['imgAttributionLink'], row['imgCreativeCommons']
-        ))
+        INSERT INTO strains (
+            strain, thc, cbd, cbg, strain_type, climate, difficulty, fungal_resistance,
+            indoor_yield_max, outdoor_yield_max, flowering_weeks_min, flowering_weeks_max,
+            height_inches_min, height_inches_max, good_effects, side_effects, img_thumb,
+            img_attribution, img_attribution_link, img_creative_commons
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ''', (
+        row['strain'], row['thc'], row['cbd'], row['cbg'], row['strainType'], row['climate'],
+        row['difficulty'], row['fungalResistance'], row['indoorYieldInGramsMax'], row['outdoorYieldInGramsMax'],
+        row['floweringWeeksMin'], row['floweringWeeksMax'], row['heightInInchesMin'], row['heightInInchesMax'],
+        row['goodEffects'], row['sideEffects'], row['imgThumb'], row['imgAttribution'],
+        row['imgAttributionLink'], row['imgCreativeCommons']
+    ))
     
     conn.commit()
     cursor.close()

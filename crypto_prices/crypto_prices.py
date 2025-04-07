@@ -1,9 +1,9 @@
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.utils.dates import days_ago
 from airflow.models import Variable
-from datetime import timedelta
+from datetime import timedelta, datetime
 import requests
 import json
 import csv
@@ -101,7 +101,7 @@ def send_email(**kwargs):
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = receiver_emails
-    msg['Subject'] = "Crypto Prices Report"
+    msg['Subject'] = "Daily Crypto Prices Report"
     
     # Email body
     body = "Please find attached the latest cryptocurrency prices."
@@ -121,6 +121,11 @@ def send_email(**kwargs):
         server.quit()
     except Exception as e:
         raise Exception(f"Failed to send email: {str(e)}")
+
+def check_send_time(**kwargs):
+    # Send email only at 8 AM daily
+    logical_date = kwargs['logical_date']
+    return logical_date.hour == 8  # Adjust the hour as needed
 
 with DAG(
     'crypto_price_dag',
@@ -149,6 +154,12 @@ with DAG(
         provide_context=True
     )
     
+    check_time_task = ShortCircuitOperator(
+        task_id='check_send_time',
+        python_callable=check_send_time,
+        provide_context=True
+    )
+    
     send_email_task = PythonOperator(
         task_id='send_email',
         python_callable=send_email,
@@ -156,4 +167,5 @@ with DAG(
     )
     
     fetch_task >> [insert_task, generate_csv_task]
-    [insert_task, generate_csv_task] >> send_email_task
+    [insert_task, generate_csv_task] >> check_time_task
+    check_time_task >> send_email_task

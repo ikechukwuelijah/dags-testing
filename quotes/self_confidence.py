@@ -68,7 +68,7 @@ def generate_csv_and_send_email(**kwargs):
     msg = MIMEMultipart()
     msg['Subject'] = 'Daily Self-Confidence Quote'
     msg['From'] = sender_email
-    msg['To'] = receiver_email
+    msg['To'] = ", ".join(receiver_email)
 
     # Add body and attachment
     msg.attach(MIMEText('Please find attached the daily quote.', 'plain'))

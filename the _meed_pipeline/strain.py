@@ -14,7 +14,7 @@ default_args = {
 
 # Define the DAG
 dag = DAG(
-    'weed_strain_etl',
+    'meed_strain_etl',
     default_args=default_args,
     description='ETL pipeline to extract weed strain data, transform it, and load it into PostgreSQL',
     schedule_interval='@monthly',  # Updated to run monthly

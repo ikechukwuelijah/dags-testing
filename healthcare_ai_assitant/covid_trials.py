@@ -22,7 +22,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 default_args = {
-    'owner': 'Ikengr',
+    'owner': 'Ikeengr',
     'depends_on_past': False,
     'email': ['ikechukwu.elijah@yahoo.com'],  
     'email_on_failure': True,

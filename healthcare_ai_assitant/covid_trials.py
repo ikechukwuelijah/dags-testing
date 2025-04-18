@@ -141,6 +141,15 @@ def load_to_postgres(**kwargs):
         clinical_trials_json = ti.xcom_pull(task_ids='fetch_data', key='clinical_trials_data')
         df = pd.read_json(clinical_trials_json)
 
+        # Database configuration (should use Airflow Connections in production)
+        db_config = {
+            "dbname": "dwh",
+            "user": "ikeengr",
+            "password": "DataEngineer247",  # Consider using Secrets Manager
+            "host": "89.40.0.150",
+            "port": "5432"
+        }
+
         # Establish database connection
         conn = psycopg2.connect(**db_config)
         cursor = conn.cursor()

@@ -1,10 +1,11 @@
 """
-COVID-19 Clinical Trials ETL Pipeline
+COVID-19 Clinical Trials ETL Pipeline using PostgresHook
 
 This DAG performs weekly extraction of COVID-19 treatment clinical trials data from clinicaltrials.gov API,
-transforms the data, and loads it into a PostgreSQL database.
+transforms the data, and loads it into a PostgreSQL database using Airflow's PostgresHook.
 
 Key Features:
+- Uses Airflow's PostgresHook for database connections
 - Runs every Monday at 6 AM
 - Sends email notifications on failure
 - Uses XCom to pass data between tasks
@@ -15,10 +16,10 @@ Key Features:
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.utils.email import send_email
 import requests
 import pandas as pd
-import psycopg2
 from psycopg2.extras import execute_values
 
 default_args = {
@@ -29,14 +30,14 @@ default_args = {
     'email_on_retry': False,
     'retries': 2,
     'retry_delay': timedelta(minutes=15),
-    'start_date': datetime(2025, 4, 18),
+    'start_date': datetime(2025, 4, 1),
 }
 
 # Define the DAG
 dag = DAG(
     'covid_clinical_trials_etl',
     default_args=default_args,
-    description='Weekly ETL pipeline for COVID-19 clinical trials data from clinicaltrials.gov to PostgreSQL',
+    description='Weekly ETL pipeline for COVID-19 clinical trials data using PostgresHook',
     schedule_interval='0 6 * * 1',  # At 06:00 on Monday (CRON syntax)
     catchup=False,
     tags=['clinical_trials', 'covid19', 'etl'],
@@ -89,7 +90,7 @@ def fetch_clinical_trials_data(**kwargs):
                 params.pop("pageToken", None)
 
             response = requests.get(base_url, params=params, headers=headers)
-            response.raise_for_status()  # Raises HTTPError for bad responses
+            response.raise_for_status()
             data = response.json()
 
             # Extract relevant study information
@@ -107,7 +108,7 @@ def fetch_clinical_trials_data(**kwargs):
 
             next_page_token = data.get("nextPageToken")
             if not next_page_token:
-                break  # Exit loop when no more pages
+                break
 
         df = pd.DataFrame(all_studies)
         print(f"Successfully fetched {len(df)} clinical trials records")
@@ -123,11 +124,11 @@ def fetch_clinical_trials_data(**kwargs):
 
 def load_to_postgres(**kwargs):
     """
-    Loads clinical trials data into PostgreSQL database
+    Loads clinical trials data into PostgreSQL database using PostgresHook
     
     Steps:
     1. Retrieves data from XCom
-    2. Establishes DB connection
+    2. Uses PostgresHook for connection
     3. Creates table if not exists
     4. Performs UPSERT operation
     
@@ -141,10 +142,11 @@ def load_to_postgres(**kwargs):
         clinical_trials_json = ti.xcom_pull(task_ids='fetch_data', key='clinical_trials_data')
         df = pd.read_json(clinical_trials_json)
 
-        # Establish database connection
-        conn = psycopg2.connect(**db_config)
+        # Initialize PostgresHook
+        postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')  # Use your connection ID
+        conn = postgres_hook.get_conn()
         cursor = conn.cursor()
-        print("Successfully connected to PostgreSQL database")
+        print("Successfully connected to PostgreSQL database using PostgresHook")
 
         # Create table if not exists
         create_table_sql = """

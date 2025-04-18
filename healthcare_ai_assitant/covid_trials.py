@@ -11,6 +11,7 @@ Key Features:
 - Uses XCom to pass data between tasks
 - Implements proper error handling
 - Maintains data integrity with UPSERT operations
+- Handles schema evolution (adds missing columns automatically)
 """
 
 from datetime import datetime, timedelta
@@ -129,8 +130,9 @@ def load_to_postgres(**kwargs):
     Steps:
     1. Retrieves data from XCom
     2. Uses PostgresHook for connection
-    3. Creates table if not exists
-    4. Performs UPSERT operation
+    3. Creates table with correct schema if not exists
+    4. Adds missing columns if table exists
+    5. Performs UPSERT operation
     
     Raises:
         Exception: If database operation fails
@@ -143,13 +145,13 @@ def load_to_postgres(**kwargs):
         df = pd.read_json(clinical_trials_json)
 
         # Initialize PostgresHook
-        postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')  # Use your connection ID
+        postgres_hook = PostgresHook(postgres_conn_id='postgres_dwh')
         conn = postgres_hook.get_conn()
         cursor = conn.cursor()
         print("Successfully connected to PostgreSQL database using PostgresHook")
 
-        # Create table if not exists
-        create_table_sql = """
+        # Create table if not exists with all required columns
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS covid_clinical_trials (
             nct_number TEXT PRIMARY KEY,
             title TEXT,
@@ -157,8 +159,22 @@ def load_to_postgres(**kwargs):
             interventions TEXT[],
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        """
-        cursor.execute(create_table_sql)
+        """)
+        
+        # Add last_updated column if table exists but column is missing
+        cursor.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_name='covid_clinical_trials' 
+                AND column_name='last_updated'
+            ) THEN
+                ALTER TABLE covid_clinical_trials ADD COLUMN last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+            END IF;
+        END $$;
+        """)
 
         # Prepare data for UPSERT operation
         values = [
@@ -184,7 +200,7 @@ def load_to_postgres(**kwargs):
         execute_values(cursor, insert_sql, values)
         conn.commit()
         
-        print(f"Successfully loaded/updated {len(values)} records in covid_clinical_trials table")
+        print(f"Successfully loaded/updated {len(values)} records")
 
     except Exception as e:
         error_msg = f"Database operation failed: {str(e)}"

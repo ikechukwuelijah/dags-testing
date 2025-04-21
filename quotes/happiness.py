@@ -1,53 +1,87 @@
-#%%
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime
 import requests
-import pandas as pd
 import psycopg2
 
-# API request
-url = "https://quotes-api12.p.rapidapi.com/quotes/random"
-querystring = {"type": "happiness"}
-headers = {
-    "x-rapidapi-key": "efbc12a764msh39a81e663d3e104p1e76acjsn337fd1d56751",
-    "x-rapidapi-host": "quotes-api12.p.rapidapi.com"
+default_args = {
+    'owner': 'Ikeengr',
+    'start_date': datetime(2025, 4, 8),
+    'retries': 1
 }
 
-response = requests.get(url, headers=headers, params=querystring)
-data = response.json()
-
-# Convert to DataFrame
-df = pd.DataFrame([data])  # ensure it's in list format
-
-# Database connection credentials
-conn = psycopg2.connect(
-    dbname="dwh",
-    user="ikeengr",
-    password="DataEngineer247",
-    host="89.40.0.150",
-    port="5432"
+dag = DAG(
+    'happiness_dag',
+    description='Fetch and store happiness quotes',
+    default_args=default_args,
+    schedule_interval='@daily',
+    catchup=False
 )
 
-cur = conn.cursor()
+# Task 1: Fetch quote from API
+def fetch_quote(**kwargs):
+    url = "https://quotes-api12.p.rapidapi.com/quotes/random"
+    querystring = {"type": "happiness"}
+    headers = {
+        "x-rapidapi-key": "efbc12a764msh39a81e663d3e104p1e76acjsn337fd1d56751",
+        "x-rapidapi-host": "quotes-api12.p.rapidapi.com"
+    }
 
-# Create table if not exists
-cur.execute("""
-    CREATE TABLE IF NOT EXISTS happiness (
-        id SERIAL PRIMARY KEY,
-        quote TEXT,
-        author TEXT,
-        type TEXT
+    response = requests.get(url, headers=headers, params=querystring)
+    quote_data = response.json()
+    
+    # Push to XCom
+    kwargs['ti'].xcom_push(key='quote_data', value=quote_data)
+
+# Task 2: Load quote into PostgreSQL
+def load_to_postgres(**kwargs):
+    # Pull from XCom
+    ti = kwargs['ti']
+    data = ti.xcom_pull(task_ids='fetch_quote', key='quote_data')
+
+    conn = psycopg2.connect(
+        dbname="dwh",
+        user="ikeengr",
+        password="DataEngineer247",
+        host="89.40.0.150",
+        port="5432"
     )
-""")
+    cur = conn.cursor()
 
-# Insert the data
-cur.execute("""
-    INSERT INTO happiness (quote, author, type)
-    VALUES (%s, %s, %s)
-""", (data['quote'], data['author'], data['type']))
+    # Ensure table exists
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS happiness (
+            id SERIAL PRIMARY KEY,
+            quote TEXT,
+            author TEXT,
+            type TEXT
+        )
+    """)
 
-# Commit changes and close connection
-conn.commit()
-cur.close()
-conn.close()
+    # Insert the quote
+    cur.execute("""
+        INSERT INTO happiness (quote, author, type)
+        VALUES (%s, %s, %s)
+    """, (data['quote'], data['author'], data['type']))
 
-print("Quote inserted successfully into 'happiness' table.")
-# %%
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Define tasks
+fetch_task = PythonOperator(
+    task_id='fetch_quote',
+    python_callable=fetch_quote,
+    provide_context=True,
+    dag=dag
+)
+
+load_task = PythonOperator(
+    task_id='load_quote',
+    python_callable=load_to_postgres,
+    provide_context=True,
+    dag=dag
+)
+
+# Set task dependencies
+fetch_task >> load_task

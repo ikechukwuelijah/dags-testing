@@ -43,7 +43,7 @@ db_params = {
 try:
     conn = psycopg2.connect(**db_params)
     cursor = conn.cursor()
-    print("✅ Connected to PostgreSQL database.")
+    print("Connected to PostgreSQL database.")
 
     # -------------------------------------------
     # 5. Create table (if not exists)
@@ -70,10 +70,10 @@ try:
 
     # Commit all inserts
     conn.commit()
-    print("✅ Data inserted into 'malaria_stats' table successfully.")
+    print("Data inserted into 'malaria_stats' table successfully.")
 
 except Exception as e:
-    print(f"❌ Error occurred: {e}")
+    print(f"Error occurred: {e}")
 
 finally:
     # Close DB connection
@@ -81,4 +81,6 @@ finally:
         cursor.close()
     if 'conn' in locals():
         conn.close()
-    print("🔒 Database connection closed.")
+    print("Database connection closed.")
+
+# %%

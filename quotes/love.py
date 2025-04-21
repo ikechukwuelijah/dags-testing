@@ -11,7 +11,7 @@ default_args = {
 }
 
 dag = DAG(
-    'love dag',
+    'love_dag',
     default_args=default_args,
     schedule_interval='@daily',
     catchup=False

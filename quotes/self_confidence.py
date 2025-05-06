@@ -4,11 +4,8 @@ from airflow.models import Variable
 from datetime import datetime
 import requests
 import psycopg2
-import csv
-from io import StringIO
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 import smtplib
 
 default_args = {
@@ -39,21 +36,10 @@ def fetch_quote(**kwargs):
     # Push to XCom
     kwargs['ti'].xcom_push(key='quote_data', value=quote_data)
 
-# Task 2: Generate CSV and send email
-def generate_csv_and_send_email(**kwargs):
+# Task 2: Send plain text email
+def send_quote_as_text_email(**kwargs):
     ti = kwargs['ti']
     data = ti.xcom_pull(task_ids='fetch_quote', key='quote_data')
-
-    # Generate CSV in memory
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['quote', 'author', 'type'])
-    writer.writerow([
-        data.get('quote', ''),
-        data.get('author', ''),
-        data.get('type', '')
-    ])
-    csv_content = output.getvalue()
 
     # Get email config from Airflow Variables
     email_config = Variable.get("email_config", deserialize_json=True)
@@ -64,17 +50,18 @@ def generate_csv_and_send_email(**kwargs):
     sender_email = email_config.get('sender_email')
     receiver_email = email_config.get('receiver_email')
 
+    # Construct plain text email body
+    quote = data.get('quote', 'No quote found.')
+    author = data.get('author', 'Unknown')
+    qtype = data.get('type', 'N/A')
+    body = f"Here is your daily self-confidence quote:\n\n\"{quote}\"\n\n- {author} ({qtype})"
+
     # Create email message
     msg = MIMEMultipart()
     msg['Subject'] = 'Daily Self-Confidence Quote'
     msg['From'] = sender_email
     msg['To'] = ", ".join(receiver_email)
-
-    # Add body and attachment
-    msg.attach(MIMEText('Please find attached the daily quote.', 'plain'))
-    attachment = MIMEApplication(csv_content.encode(), Name='quote.csv')
-    attachment['Content-Disposition'] = 'attachment; filename="quote.csv"'
-    msg.attach(attachment)
+    msg.attach(MIMEText(body, 'plain'))
 
     # Send email via SMTP
     try:
@@ -87,9 +74,9 @@ def generate_csv_and_send_email(**kwargs):
         server.login(smtp_user, smtp_password)
         server.sendmail(sender_email, receiver_email, msg.as_string())
         server.quit()
-        print("Email sent successfully")
+        print("Text email sent successfully")
     except Exception as e:
-        print(f"Email sending failed: {str(e)}")
+        print(f"Text email sending failed: {str(e)}")
         raise
 
 # Task 3: Load quote into PostgreSQL
@@ -132,9 +119,9 @@ fetch_task = PythonOperator(
     dag=dag
 )
 
-email_task = PythonOperator(
-    task_id='send_csv_email',
-    python_callable=generate_csv_and_send_email,
+text_email_task = PythonOperator(
+    task_id='send_text_email',
+    python_callable=send_quote_as_text_email,
     provide_context=True,
     dag=dag
 )
@@ -147,4 +134,4 @@ load_task = PythonOperator(
 )
 
 # Set task dependencies
-fetch_task >> [email_task, load_task]
+fetch_task >> [text_email_task, load_task]

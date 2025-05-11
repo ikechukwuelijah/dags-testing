@@ -22,8 +22,7 @@ dag = DAG(
     catchup=False,
 )
 
-def etl_process(**kwargs):
-    # Step 1: Extract
+def extract_data(**kwargs):
     url = "https://game-quiz.p.rapidapi.com/quiz/random"
     querystring = {
         "lang": "en", "amount": "100", "format": "mcq",
@@ -37,12 +36,17 @@ def etl_process(**kwargs):
     response = requests.get(url, headers=headers, params=querystring)
     json_data = response.json()
 
+    kwargs['ti'].xcom_push(key='raw_data', value=json_data)
+
+def transform_data(**kwargs):
+    ti = kwargs['ti']
+    json_data = ti.xcom_pull(task_ids='extract', key='raw_data')
+
     records = []
     for item in json_data.get("data", []):
         question = item.get("question")
         correct = item.get("options", {}).get("correct")
         incorrect = item.get("options", {}).get("incorrect", [])
-
         incorrect = (incorrect + [None] * 3)[:3]
 
         record = {
@@ -60,8 +64,14 @@ def etl_process(**kwargs):
         records.append(record)
 
     df = pd.DataFrame(records)
+    ti.xcom_push(key='transformed_data', value=df.to_dict(orient='records'))
 
-    # Step 2: Load
+def load_data(**kwargs):
+    ti = kwargs['ti']
+    records = ti.xcom_pull(task_ids='transform', key='transformed_data')
+
+    df = pd.DataFrame(records)
+
     db_params = {
         "dbname": "dwh",
         "user": "ikeengr",
@@ -108,13 +118,28 @@ def etl_process(**kwargs):
     conn.commit()
     cur.close()
     conn.close()
-    print("ETL completed and data loaded successfully!")
 
-etl_task = PythonOperator(
-    task_id='run_etl',
-    python_callable=etl_process,
+# Task Definitions
+extract_task = PythonOperator(
+    task_id='extract',
+    python_callable=extract_data,
     provide_context=True,
     dag=dag,
 )
 
-etl_task
+transform_task = PythonOperator(
+    task_id='transform',
+    python_callable=transform_data,
+    provide_context=True,
+    dag=dag,
+)
+
+load_task = PythonOperator(
+    task_id='load',
+    python_callable=load_data,
+    provide_context=True,
+    dag=dag,
+)
+
+# Task Dependencies
+extract_task >> transform_task >> load_task

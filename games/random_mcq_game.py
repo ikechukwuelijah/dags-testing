@@ -1,163 +1,172 @@
-from airflow import DAG
-from airflow.operators.python_operator import PythonOperator
-from airflow.hooks.base_hook import BaseHook
 import requests
 import pandas as pd
 import psycopg2
-from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.utils.dates import days_ago
+from airflow.models import Variable
 
-# -------------------------------
-# Define the DAG arguments
-# -------------------------------
-default_args = {
-    'owner': 'Ik',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 5, 11),  # Adjust start date accordingly
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
+# ----------------------------
+# Step 1: Extract - API Request
+# ----------------------------
 
-# -------------------------------
-# Define the DAG
-# -------------------------------
-dag = DAG(
-    'random_mcq_game_quiz',  # DAG Name
-    default_args=default_args,
-    description='ETL for random MCQ game quiz',
-    schedule_interval=timedelta(days=1),  # Run daily
-    catchup=False,  # Do not backfill
-)
-
-# -------------------------------
-# Step 1: Extract - Fetch API Data
-# -------------------------------
-
-def extract_data():
+def extract_data(**kwargs):
     url = "https://game-quiz.p.rapidapi.com/quiz/random"
-    querystring = {"lang":"en","amount":"100","format":"mcq","cached":"false","endpoint":"games"}
+    querystring = {"lang": "en", "amount": "100", "format": "mcq", "cached": "false", "endpoint": "games"}
+
     headers = {
         "x-rapidapi-key": "e7cbee4ae1mshd0704b6dcc65548p1632e3jsncb04d537a049",
         "x-rapidapi-host": "game-quiz.p.rapidapi.com"
     }
-    
-    response = requests.get(url, headers=headers, params=querystring)
-    response_data = response.json()
-    
-    if response_data['status'] == 'ok':
-        # Push data to XCom
-        return response_data['data']
-    else:
-        return None
 
-# -------------------------------
-# Step 2: Transform - Convert API response to DataFrame
-# -------------------------------
+    response = requests.get(url, headers=headers, params=querystring)
+
+    if response.status_code == 200:
+        response_data = response.json()['data']  # Extract 'data' from the JSON response
+        # Push the extracted data to XCom for the next task
+        ti = kwargs['ti']
+        ti.xcom_push(key='response_data', value=response_data)
+    else:
+        raise Exception(f"API request failed with status code: {response.status_code}")
+
+# ----------------------------
+# Step 2: Transform - Data Transformation
+# ----------------------------
 
 def transform_data(**kwargs):
-    # Get data from XCom
     ti = kwargs['ti']
-    response_data = ti.xcom_pull(task_ids='extract_data')
+    response_data = ti.xcom_pull(task_ids='extract_data', key='response_data')
 
     if response_data:
         # Convert to DataFrame
         df = pd.json_normalize(response_data)
-        
-        # Select required columns (adjust if needed)
-        df_transformed = df[['question', 'options.correct', 'options.incorrect', 'reference', 'extra.type', 'extra.content', 'options.is_image']]
-        df_transformed.columns = ['question', 'correct_answer', 'option_1', 'option_2', 'option_3', 'option_4', 'reference', 'extra_type', 'extra_content', 'is_image']
-        
-        # Push the DataFrame to XCom
+
+        # Debug: Print DataFrame shape and columns
+        print("DataFrame shape:", df.shape)
+        print("DataFrame columns:", df.columns)
+
+        # Select and transform the columns, ensuring we have the correct number of columns
+        # Here, we will check the structure and handle optional columns if they exist
+        required_columns = [
+            'question', 'options.correct', 'options.incorrect', 'reference', 'extra.type', 'extra.content', 'options.is_image'
+        ]
+
+        # Ensure these columns exist before processing
+        available_columns = [col for col in required_columns if col in df.columns]
+
+        # Extract the relevant data, filling any missing values
+        df_transformed = df[available_columns].fillna("")
+
+        # Debug: Print the transformed DataFrame
+        print("Transformed DataFrame:")
+        print(df_transformed.head())
+
+        # Assign the correct column names to match the final structure
+        column_mapping = {
+            'question': 'question',
+            'options.correct': 'correct_answer',
+            'options.incorrect': 'option_1',  # This could be split into multiple columns if needed
+            'reference': 'reference',
+            'extra.type': 'extra_type',
+            'extra.content': 'extra_content',
+            'options.is_image': 'is_image'
+        }
+
+        df_transformed = df_transformed.rename(columns=column_mapping)
+
+        # Ensure the correct number of columns in the final DataFrame
+        print("Final DataFrame shape:", df_transformed.shape)
+
+        # Push the transformed DataFrame to XCom
         ti.xcom_push(key='df_data', value=df_transformed)
     else:
         raise ValueError("No data extracted from the API!")
 
-# -------------------------------
-# Step 3: Load - Insert Data into PostgreSQL
-# -------------------------------
+# ----------------------------
+# Step 3: Load - Data to PostgreSQL
+# ----------------------------
 
 def load_data_to_postgres(**kwargs):
-    # Get transformed data from XCom
     ti = kwargs['ti']
-    df = ti.xcom_pull(task_ids='transform_data', key='df_data')
+    df_transformed = ti.xcom_pull(task_ids='transform_data', key='df_data')
 
-    if df is not None:
+    if df_transformed is not None and not df_transformed.empty:
         # Database connection parameters
         db_params = {
-            "dbname": "dwh",
-            "user": "ikeengr",
-            "password": "DataEngineer247",
-            "host": "89.40.0.150",
-            "port": "5432"
+            'dbname': 'dwh',
+            'user': 'ikeengr',
+            'password': 'DataEngineer247',
+            'host': '89.40.0.150',
+            'port': '5432'
         }
 
-        # Create connection to PostgreSQL
-        conn = psycopg2.connect(**db_params)
-        cur = conn.cursor()
+        try:
+            # Establish connection to the PostgreSQL database
+            conn = psycopg2.connect(**db_params)
+            cursor = conn.cursor()
 
-        # Create table if not exists
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS random_mcq_game_quiz (
-            id SERIAL PRIMARY KEY,
-            question TEXT,
-            correct_answer TEXT,
-            option_1 TEXT,
-            option_2 TEXT,
-            option_3 TEXT,
-            option_4 TEXT,
-            reference TEXT,
-            extra_type TEXT,
-            extra_content TEXT,
-            is_image BOOLEAN
-        );
-        """
-        cur.execute(create_table_query)
-        conn.commit()
-
-        # Insert DataFrame into PostgreSQL
-        for index, row in df.iterrows():
+            # Prepare the SQL query to insert the transformed data into the database
             insert_query = """
-            INSERT INTO random_mcq_game_quiz (question, correct_answer, option_1, option_2, option_3, option_4, reference, extra_type, extra_content, is_image)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO random_mcq_game_quiz (
+                    question, correct_answer, option_1, option_2, option_3, option_4, reference, extra_type, extra_content, is_image
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
-            values = (row['question'], row['correct_answer'], row['option_1'], row['option_2'], row['option_3'], row['option_4'], row['reference'], row['extra_type'], row['extra_content'], row['is_image'])
-            
-            cur.execute(insert_query, values)
 
-        # Commit the changes and close the connection
-        conn.commit()
-        cur.close()
-        conn.close()
+            # Insert each row of the DataFrame into the database
+            for index, row in df_transformed.iterrows():
+                cursor.execute(insert_query, tuple(row))
 
-        print("Data loaded successfully into PostgreSQL!")
+            # Commit the transaction
+            conn.commit()
+
+            print(f"Successfully inserted {len(df_transformed)} rows into the PostgreSQL database.")
+
+        except Exception as e:
+            print(f"Error loading data to PostgreSQL: {e}")
+        finally:
+            # Close the database connection
+            if conn:
+                conn.close()
+            if cursor:
+                cursor.close()
     else:
-        raise ValueError("No data to load into PostgreSQL!")
+        print("No transformed data to load into PostgreSQL.")
 
-# -------------------------------
-# Define Airflow Tasks
-# -------------------------------
+# ----------------------------
+# Airflow DAG Configuration
+# ----------------------------
 
-extract_task = PythonOperator(
-    task_id='extract_data',
-    python_callable=extract_data,
-    dag=dag,
-)
+with DAG(
+    'random_mcq_game_quiz', 
+    default_args={
+        'owner': 'Ik',
+        'start_date': days_ago(1),  # Start the DAG from 1 day ago (adjust as needed)
+        'retries': 1,
+    },
+    schedule_interval='@daily',  # Run the DAG daily
+    catchup=False,  # Don't run missed DAG runs
+) as dag:
+    
+    # Task 1: Extract data from the API
+    extract_task = PythonOperator(
+        task_id='extract_data',
+        python_callable=extract_data,
+        provide_context=True,
+    )
 
-transform_task = PythonOperator(
-    task_id='transform_data',
-    python_callable=transform_data,
-    provide_context=True,
-    dag=dag,
-)
+    # Task 2: Transform the data
+    transform_task = PythonOperator(
+        task_id='transform_data',
+        python_callable=transform_data,
+        provide_context=True,
+    )
 
-load_task = PythonOperator(
-    task_id='load_data_to_postgres',
-    python_callable=load_data_to_postgres,
-    provide_context=True,
-    dag=dag,
-)
+    # Task 3: Load the data into PostgreSQL
+    load_task = PythonOperator(
+        task_id='load_data_to_postgres',
+        python_callable=load_data_to_postgres,
+        provide_context=True,
+    )
 
-# -------------------------------
-# Define Task Dependencies
-# -------------------------------
-
-extract_task >> transform_task >> load_task
+    # Define task dependencies
+    extract_task >> transform_task >> load_task

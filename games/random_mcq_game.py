@@ -43,10 +43,13 @@ def extract_data():
     response = requests.get(url, headers=headers, params=querystring)
     response_data = response.json()
     
+    print("Extracted API Response:", response_data)  # Debugging log
+
     if response_data['status'] == 'ok':
         # Push data to XCom
         return response_data['data']
     else:
+        print("API response status not OK:", response_data)  # Debugging log
         return None
 
 # -------------------------------
@@ -58,17 +61,28 @@ def transform_data(**kwargs):
     ti = kwargs['ti']
     response_data = ti.xcom_pull(task_ids='extract_data')
 
+    print("Data pulled from XCom:", response_data)  # Debugging log
+
     if response_data:
         # Convert to DataFrame
         df = pd.json_normalize(response_data)
         
+        print("Normalized DataFrame:", df.head())  # Debugging log
+
         # Select required columns (adjust if needed)
-        df_transformed = df[['question', 'options.correct', 'options.incorrect', 'reference', 'extra.type', 'extra.content', 'options.is_image']]
-        df_transformed.columns = ['question', 'correct_answer', 'option_1', 'option_2', 'option_3', 'option_4', 'reference', 'extra_type', 'extra_content', 'is_image']
-        
-        # Push the DataFrame to XCom
-        ti.xcom_push(key='df_data', value=df_transformed)
+        try:
+            df_transformed = df[['question', 'options.correct', 'options.incorrect', 'reference', 'extra.type', 'extra.content', 'options.is_image']]
+            df_transformed.columns = ['question', 'correct_answer', 'option_1', 'option_2', 'option_3', 'option_4', 'reference', 'extra_type', 'extra_content', 'is_image']
+            
+            print("Transformed DataFrame:", df_transformed.head())  # Debugging log
+
+            # Push the DataFrame to XCom
+            ti.xcom_push(key='df_data', value=df_transformed)
+        except KeyError as e:
+            print("KeyError during transformation:", e)  # Debugging log
+            raise
     else:
+        print("No data extracted from the API!")  # Debugging log
         raise ValueError("No data extracted from the API!")
 
 # -------------------------------

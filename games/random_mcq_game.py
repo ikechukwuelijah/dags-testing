@@ -4,7 +4,7 @@ import requests
 import pandas as pd
 import numpy as np
 import psycopg2
-import psycopg2.extras
+import psycopg2.extras  # Needed for execute_batch
 from datetime import datetime, timedelta
 
 default_args = {
@@ -24,13 +24,14 @@ dag = DAG(
 )
 
 def extract_data(**kwargs):
-    url = "https://example.com/api/mcq"  # Replace with your real API
+    # Replace this URL with your actual data source
+    url = "https://example.com/api/mcq"
     response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
         kwargs['ti'].xcom_push(key='api_data', value=data)
     else:
-        raise ValueError(f"Failed to fetch data: {response.status_code}")
+        raise Exception(f"Failed to fetch data. Status code: {response.status_code}")
 
 def transform_data(**kwargs):
     ti = kwargs['ti']
@@ -120,7 +121,7 @@ def load_data_to_postgres(**kwargs):
     else:
         raise ValueError("No data to load!")
 
-# Define tasks
+# Define PythonOperator tasks
 extract_task = PythonOperator(
     task_id='extract_data',
     python_callable=extract_data,
@@ -142,4 +143,5 @@ load_task = PythonOperator(
     dag=dag,
 )
 
+# Set task dependencies
 extract_task >> transform_task >> load_task

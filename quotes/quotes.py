@@ -58,15 +58,10 @@ with DAG(
         return df.to_dict('records')
 
     # Function to load transformed data into PostgreSQL
-
-   def load_quotes(**kwargs):
-
-    hook = PostgresHook(postgres_conn_id='postgres_dwh')
-    conn = hook.get_conn()
-    cursor = conn.cursor()
-
-    # Optional: Drop table if it exists (for dev purposes)
-    # cursor.execute("DROP TABLE IF EXISTS quotes")
+    def load_quotes(**kwargs):
+        hook = PostgresHook(postgres_conn_id='postgres_dwh')
+        conn = hook.get_conn()
+        cursor = conn.cursor()
 
         create_table_query = """
         CREATE TABLE IF NOT EXISTS quotes (

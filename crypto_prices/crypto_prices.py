@@ -5,13 +5,9 @@ from airflow.utils.dates import days_ago
 from airflow.models import Variable
 from datetime import timedelta, datetime
 import requests
-import json
-import csv
-import io
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 
 # Default arguments for the DAG
 default_args = {
@@ -65,29 +61,19 @@ def insert_into_postgres(**kwargs):
     cursor.close()
     connection.close()
 
-def generate_csv(**kwargs):
+def send_email(**kwargs):
     ti = kwargs['ti']
     crypto_data = ti.xcom_pull(task_ids='fetch_crypto_prices')
     if not crypto_data:
         raise ValueError("No data received from fetch task")
     
-    # Create CSV in memory
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['symbol', 'price_usd', 'change_24h'])
+    # Generate report as plain text
+    report_lines = ["Symbol | Price (USD) | 24h Change (%)", "-" * 40]
     for crypto in crypto_data:
-        writer.writerow([crypto['symbol'], crypto['price_usd'], crypto['change_24h']])
+        line = f"{crypto['symbol']} | ${crypto['price_usd']:.2f} | {crypto['change_24h']:.2f}%"
+        report_lines.append(line)
     
-    csv_content = output.getvalue()
-    output.close()
-    
-    ti.xcom_push(key='csv_content', value=csv_content)
-
-def send_email(**kwargs):
-    ti = kwargs['ti']
-    csv_content = ti.xcom_pull(task_ids='generate_csv', key='csv_content')
-    if not csv_content:
-        raise ValueError("No CSV content received")
+    report_text = "\n".join(report_lines)
     
     # Retrieve SMTP settings from Airflow Variables
     smtp_host = Variable.get("smtp_host")
@@ -103,14 +89,7 @@ def send_email(**kwargs):
     msg['To'] = receiver_emails
     msg['Subject'] = "Daily Crypto Prices Report"
     
-    # Email body
-    body = "Please find attached the latest cryptocurrency prices."
-    msg.attach(MIMEText(body, 'plain'))
-    
-    # Attach CSV
-    part = MIMEApplication(csv_content.encode(), Name='crypto_prices.csv')
-    part['Content-Disposition'] = f'attachment; filename="crypto_prices.csv"'
-    msg.attach(part)
+    msg.attach(MIMEText(report_text, 'plain'))
     
     # Send email
     try:
@@ -148,12 +127,6 @@ with DAG(
         provide_context=True
     )
     
-    generate_csv_task = PythonOperator(
-        task_id='generate_csv',
-        python_callable=generate_csv,
-        provide_context=True
-    )
-    
     check_time_task = ShortCircuitOperator(
         task_id='check_send_time',
         python_callable=check_send_time,
@@ -166,6 +139,6 @@ with DAG(
         provide_context=True
     )
     
-    fetch_task >> [insert_task, generate_csv_task]
-    [insert_task, generate_csv_task] >> check_time_task
+    fetch_task >> [insert_task, check_time_task]
+    insert_task >> check_time_task
     check_time_task >> send_email_task

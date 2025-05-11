@@ -3,6 +3,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.hooks.base_hook import BaseHook
 import requests
 import pandas as pd
+import numpy as np
 import psycopg2
 from datetime import datetime, timedelta
 
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta
 default_args = {
     'owner': 'Ik',
     'depends_on_past': False,
-    'start_date': datetime(2025, 5, 11),  # Adjust start date accordingly
+    'start_date': datetime(2025, 5, 11),
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
@@ -21,17 +22,16 @@ default_args = {
 # Define the DAG
 # -------------------------------
 dag = DAG(
-    'random_mcq_game_quiz',  # DAG Name
+    'random_mcq_game_quiz',
     default_args=default_args,
     description='ETL for random MCQ game quiz',
-    schedule_interval=timedelta(days=1),  # Run daily
-    catchup=False,  # Do not backfill
+    schedule_interval=timedelta(days=1),
+    catchup=False,
 )
 
 # -------------------------------
 # Step 1: Extract - Fetch API Data
 # -------------------------------
-
 def extract_data():
     url = "https://game-quiz.p.rapidapi.com/quiz/random"
     querystring = {"lang":"en","amount":"100","format":"mcq","cached":"false","endpoint":"games"}
@@ -44,44 +44,82 @@ def extract_data():
     response_data = response.json()
     
     if response_data['status'] == 'ok':
-        # Push data to XCom
         return response_data['data']
     else:
         return None
 
 # -------------------------------
-# Step 2: Transform - Convert API response to DataFrame
+# Step 2: Transform - Process and Format Data
 # -------------------------------
-
 def transform_data(**kwargs):
-    # Get data from XCom
     ti = kwargs['ti']
     response_data = ti.xcom_pull(task_ids='extract_data')
 
     if response_data:
-        # Convert to DataFrame
         df = pd.json_normalize(response_data)
         
-        # Select required columns (adjust if needed)
-        df_transformed = df[['question', 'options.correct', 'options.incorrect', 'reference', 'extra.type', 'extra.content', 'options.is_image']]
-        df_transformed.columns = ['question', 'correct_answer', 'option_1', 'option_2', 'option_3', 'option_4', 'reference', 'extra_type', 'extra_content', 'is_image']
+        # Create temporary DataFrame with required fields
+        df_transformed = df[[
+            'question', 
+            'options.correct', 
+            'options.incorrect', 
+            'reference', 
+            'extra.type', 
+            'extra.content', 
+            'options.is_image'
+        ]].copy()
         
-        # Push the DataFrame to XCom
+        # Combine correct + incorrect answers and shuffle
+        df_transformed['all_options'] = df_transformed.apply(
+            lambda row: [row['options.correct']] + row['options.incorrect'],
+            axis=1
+        )
+        
+        # Shuffle options and split into 4 columns
+        df_transformed['all_options'] = df_transformed['all_options'].apply(
+            lambda opts: pd.Series(np.random.permutation(opts))
+        df_transformed[['option_1','option_2','option_3','option_4']] = df_transformed['all_options'].apply(pd.Series)
+        
+        # Cleanup temporary columns
+        df_transformed.drop(
+            columns=['options.incorrect', 'all_options'], 
+            inplace=True
+        )
+        
+        # Rename columns to match database schema
+        df_transformed.rename(columns={
+            'options.correct': 'correct_answer',
+            'extra.type': 'extra_type',
+            'extra.content': 'extra_content',
+            'options.is_image': 'is_image'
+        }, inplace=True)
+        
+        # Ensure column order matches database table
+        df_transformed = df_transformed[[
+            'question', 
+            'correct_answer', 
+            'option_1', 
+            'option_2', 
+            'option_3', 
+            'option_4',
+            'reference', 
+            'extra_type', 
+            'extra_content', 
+            'is_image'
+        ]]
+        
         ti.xcom_push(key='df_data', value=df_transformed)
     else:
         raise ValueError("No data extracted from the API!")
 
 # -------------------------------
-# Step 3: Load - Insert Data into PostgreSQL
+# Step 3: Load - Insert into PostgreSQL
 # -------------------------------
-
 def load_data_to_postgres(**kwargs):
-    # Get transformed data from XCom
     ti = kwargs['ti']
     df = ti.xcom_pull(task_ids='transform_data', key='df_data')
 
     if df is not None:
-        # Database connection parameters
         db_params = {
             "dbname": "dwh",
             "user": "ikeengr",
@@ -90,11 +128,9 @@ def load_data_to_postgres(**kwargs):
             "port": "5432"
         }
 
-        # Create connection to PostgreSQL
         conn = psycopg2.connect(**db_params)
         cur = conn.cursor()
 
-        # Create table if not exists
         create_table_query = """
         CREATE TABLE IF NOT EXISTS random_mcq_game_quiz (
             id SERIAL PRIMARY KEY,
@@ -113,29 +149,32 @@ def load_data_to_postgres(**kwargs):
         cur.execute(create_table_query)
         conn.commit()
 
-        # Insert DataFrame into PostgreSQL
         for index, row in df.iterrows():
             insert_query = """
-            INSERT INTO random_mcq_game_quiz (question, correct_answer, option_1, option_2, option_3, option_4, reference, extra_type, extra_content, is_image)
+            INSERT INTO random_mcq_game_quiz (
+                question, correct_answer, 
+                option_1, option_2, option_3, option_4,
+                reference, extra_type, extra_content, is_image
+            )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
-            values = (row['question'], row['correct_answer'], row['option_1'], row['option_2'], row['option_3'], row['option_4'], row['reference'], row['extra_type'], row['extra_content'], row['is_image'])
-            
+            values = (
+                row['question'], row['correct_answer'],
+                row['option_1'], row['option_2'], row['option_3'], row['option_4'],
+                row['reference'], row['extra_type'], row['extra_content'], row['is_image']
+            )
             cur.execute(insert_query, values)
 
-        # Commit the changes and close the connection
         conn.commit()
         cur.close()
         conn.close()
-
-        print("Data loaded successfully into PostgreSQL!")
+        print("Data loaded successfully!")
     else:
-        raise ValueError("No data to load into PostgreSQL!")
+        raise ValueError("No data to load!")
 
 # -------------------------------
 # Define Airflow Tasks
 # -------------------------------
-
 extract_task = PythonOperator(
     task_id='extract_data',
     python_callable=extract_data,
@@ -155,9 +194,5 @@ load_task = PythonOperator(
     provide_context=True,
     dag=dag,
 )
-
-# -------------------------------
-# Define Task Dependencies
-# -------------------------------
 
 extract_task >> transform_task >> load_task

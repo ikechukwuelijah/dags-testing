@@ -4,10 +4,8 @@ import requests
 import pandas as pd
 import numpy as np
 import psycopg2
+import psycopg2.extras
 from datetime import datetime, timedelta
-
-# Install required package first
-# pip install pyarrow
 
 default_args = {
     'owner': 'Ik',
@@ -25,12 +23,18 @@ dag = DAG(
     catchup=False,
 )
 
-def extract_data():
-    # ... [unchanged extract code] ...
+def extract_data(**kwargs):
+    url = "https://example.com/api/mcq"  # Replace with your real API
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        kwargs['ti'].xcom_push(key='api_data', value=data)
+    else:
+        raise ValueError(f"Failed to fetch data: {response.status_code}")
 
 def transform_data(**kwargs):
     ti = kwargs['ti']
-    response_data = ti.xcom_pull(task_ids='extract_data')
+    response_data = ti.xcom_pull(task_ids='extract_data', key='api_data')
 
     if response_data:
         df = pd.json_normalize(response_data)
@@ -40,19 +44,16 @@ def transform_data(**kwargs):
             'reference', 'extra.type', 'extra.content', 'options.is_image'
         ]].copy()
         
-        # Process options
         df_transformed['all_options'] = df_transformed.apply(
             lambda row: [row['options.correct']] + row['options.incorrect'],
             axis=1
         )
         
-        # Handle option shuffling and splitting
         shuffled = df_transformed['all_options'].apply(
             lambda x: pd.Series(np.random.permutation(x))
         )
         df_transformed[['option_1','option_2','option_3','option_4']] = shuffled
         
-        # Cleanup and rename
         df_transformed = df_transformed.drop(columns=['options.incorrect', 'all_options'])
         df_transformed = df_transformed.rename(columns={
             'options.correct': 'correct_answer',
@@ -61,14 +62,12 @@ def transform_data(**kwargs):
             'options.is_image': 'is_image'
         })
         
-        # Ensure correct column order
         df_transformed = df_transformed[[
             'question', 'correct_answer', 'option_1', 'option_2',
             'option_3', 'option_4', 'reference', 'extra_type',
             'extra_content', 'is_image'
         ]]
         
-        # Convert to JSON-friendly format
         ti.xcom_push(key='df_data', value=df_transformed.to_dict('records'))
     else:
         raise ValueError("No data extracted!")
@@ -103,10 +102,8 @@ def load_data_to_postgres(**kwargs):
                     )
                 """)
                 
-                # Convert boolean column
                 df['is_image'] = df['is_image'].astype(bool)
                 
-                # Use execute_batch for bulk insert
                 psycopg2.extras.execute_batch(
                     cur,
                     """INSERT INTO random_mcq_game_quiz (
@@ -123,9 +120,26 @@ def load_data_to_postgres(**kwargs):
     else:
         raise ValueError("No data to load!")
 
-# Task definitions remain the same
-extract_task = PythonOperator(...)
-transform_task = PythonOperator(...)
-load_task = PythonOperator(...)
+# Define tasks
+extract_task = PythonOperator(
+    task_id='extract_data',
+    python_callable=extract_data,
+    provide_context=True,
+    dag=dag,
+)
+
+transform_task = PythonOperator(
+    task_id='transform_data',
+    python_callable=transform_data,
+    provide_context=True,
+    dag=dag,
+)
+
+load_task = PythonOperator(
+    task_id='load_data',
+    python_callable=load_data_to_postgres,
+    provide_context=True,
+    dag=dag,
+)
 
 extract_task >> transform_task >> load_task

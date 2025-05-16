@@ -72,6 +72,9 @@ def load_data(**kwargs):
 
     df = pd.DataFrame(records)
 
+    if df.empty:
+        raise ValueError("DataFrame is empty. Nothing to load into the database.")
+
     db_params = {
         "dbname": "dwh",
         "user": "ikeengr",

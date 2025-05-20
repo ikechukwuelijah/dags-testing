@@ -1,5 +1,4 @@
 from airflow.decorators import dag, task
-from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.utils.dates import days_ago
 
@@ -28,10 +27,24 @@ EMAIL_SENDER = "youremail@gmail.com"
 EMAIL_PASSWORD = "your_app_password"
 EMAIL_RECEIVERS = ["recipient1@example.com", "recipient2@example.com"]
 
-# Store in XCom-safe location
 EXTRACT_PATH = "/tmp/raw_air_quality.csv"
 
-@dag(schedule="0 6 * * *", start_date=days_ago(1), catchup=False, tags=["air_quality"])
+# DAG Metadata
+default_args = {
+    "owner": "Ike",
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+@dag(
+    dag_id="london_air_quality_etl_pipeline",
+    default_args=default_args,
+    description="ETL pipeline for city air quality metrics",
+    schedule_interval="0 6 * * *",  # Run daily at 6:00 UTC
+    start_date=days_ago(1),
+    catchup=False,
+    tags=["air_quality", "ETL"]
+)
 def city_metrics_pipeline():
 
     @task
@@ -137,7 +150,7 @@ def city_metrics_pipeline():
 
     create_dim_and_fact = PostgresOperator(
         task_id="load_staging",
-        postgres_conn_id="your_postgres_conn",  # Define in Airflow Connections UI
+        postgres_conn_id="your_postgres_conn",  # Set in Airflow UI
         sql="""
         CREATE TABLE IF NOT EXISTS dim_location (
             location_id SERIAL PRIMARY KEY,
@@ -202,7 +215,7 @@ def city_metrics_pipeline():
         cur.close()
         conn.close()
 
-    # Task orchestration
+    # Task Orchestration
     extracted = extract_data()
     raw_loaded = load_raw()
     cleaned = clean_data()

@@ -137,13 +137,10 @@ SELECT city, location, 'pm10', ROUND(pm10::NUMERIC,2), 'µg/m³', timestamp::DAT
 conn.commit()
 cur.close()
 conn.close()
-
 print("✅ Appended to stg_air_quality")
 
 #%%
 # === Create dimension and fact tables, deduplicate and load ===
-import psycopg2
-
 conn = psycopg2.connect(**DB_CONFIG)
 cur  = conn.cursor()
 
@@ -207,10 +204,30 @@ conn.close()
 print("✅ Dimension and Fact tables created and populated successfully.")
 
 #%%
-# === Data Quality Check: Count rows, validate schema, alert on low volume ===
-import psycopg2
+# === Data Quality Check + Email Alert ===
+import smtplib
+from email.message import EmailMessage
 
 EXPECTED_MIN_RECORDS = 10  # Set your expected threshold here
+
+# Email config
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_SENDER = "youremail@gmail.com"
+EMAIL_PASSWORD = "your_app_password"
+EMAIL_RECEIVERS = ["recipient1@example.com", "recipient2@example.com"]  # ← Multiple recipients
+
+def send_email_alert(subject, body):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = ", ".join(EMAIL_RECEIVERS)  # Join list into comma-separated string
+    msg.set_content(body)
+
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+        server.send_message(msg)
 
 try:
     conn = psycopg2.connect(**DB_CONFIG)
@@ -223,7 +240,7 @@ try:
     row_count = cur.fetchone()[0]
     print(f"📊 Row count in 'fact_air_quality': {row_count}")
 
-    # 2. Verify schema and NULL constraints
+    # 2. Schema check
     cur.execute("""
     SELECT column_name, is_nullable
     FROM information_schema.columns
@@ -234,7 +251,7 @@ try:
     for col, nullable in schema_info:
         print(f" - {col}: {'Nullable' if nullable == 'YES' else 'NOT NULL'}")
 
-    # Check for unexpected NULLs in critical fields
+    # 3. NULLs in critical fields
     cur.execute("""
     SELECT COUNT(*) FROM fact_air_quality
     WHERE location_id IS NULL OR parameter IS NULL OR measurement_date IS NULL OR avg_value IS NULL
@@ -243,10 +260,19 @@ try:
     if null_issues > 0:
         print(f"⚠️ Warning: Found {null_issues} records with NULLs in critical columns.")
 
-    # 3. Alert if below threshold
+    # 4. Volume alert
     if row_count < EXPECTED_MIN_RECORDS:
-        print(f"🚨 ALERT: Row count below expected threshold ({row_count} < {EXPECTED_MIN_RECORDS})!")
+        subject = "🚨 Air Quality ETL Alert: Low Data Volume"
+        body = f"""
+        Alert from ETL pipeline:
 
+        Table: fact_air_quality
+        Row count: {row_count}
+        Expected: {EXPECTED_MIN_RECORDS}
+
+        Timestamp: {datetime.utcnow().isoformat()} UTC
+        """
+        send_email_alert(subject, body)
     else:
         print("✅ Data volume is within acceptable range.")
 

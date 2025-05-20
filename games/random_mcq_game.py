@@ -1,5 +1,5 @@
 from airflow import DAG
-from airflow.operators.python_operator import PythonOperator
+from airflow.operators.python import PythonOperator  # ✅ Modern import path
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
@@ -22,7 +22,7 @@ dag = DAG(
     catchup=False,
 )
 
-def extract_data(**kwargs):
+def extract_data(ti):
     url = "https://game-quiz.p.rapidapi.com/quiz/random"
     querystring = {
         "lang": "en", "amount": "100", "format": "mcq",
@@ -34,12 +34,12 @@ def extract_data(**kwargs):
     }
 
     response = requests.get(url, headers=headers, params=querystring)
+    response.raise_for_status()
     json_data = response.json()
 
-    kwargs['ti'].xcom_push(key='raw_data', value=json_data)
+    ti.xcom_push(key='raw_data', value=json_data)
 
-def transform_data(**kwargs):
-    ti = kwargs['ti']
+def transform_data(ti):
     json_data = ti.xcom_pull(task_ids='extract', key='raw_data')
 
     records = []
@@ -66,10 +66,8 @@ def transform_data(**kwargs):
     df = pd.DataFrame(records)
     ti.xcom_push(key='transformed_data', value=df.to_dict(orient='records'))
 
-def load_data(**kwargs):
-    ti = kwargs['ti']
+def load_data(ti):
     records = ti.xcom_pull(task_ids='transform', key='transformed_data')
-
     df = pd.DataFrame(records)
 
     if df.empty:
@@ -126,21 +124,18 @@ def load_data(**kwargs):
 extract_task = PythonOperator(
     task_id='extract',
     python_callable=extract_data,
-    provide_context=True,
     dag=dag,
 )
 
 transform_task = PythonOperator(
     task_id='transform',
     python_callable=transform_data,
-    provide_context=True,
     dag=dag,
 )
 
 load_task = PythonOperator(
     task_id='load',
     python_callable=load_data,
-    provide_context=True,
     dag=dag,
 )
 

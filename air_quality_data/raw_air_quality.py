@@ -15,13 +15,7 @@ LAT = 51.5074
 LON = -0.1278
 CITY_NAME = "London"
 LOCATION_NAME = "London Central AQ"
-DB_CONFIG = {
-    "dbname": "dwh",
-    "user": "ikeengr",
-    "password": "DataEngineer247",
-    "host": "89.40.0.150",
-    "port": "5432"
-}
+
 EXPECTED_MIN_RECORDS = 10
 EMAIL_SENDER = "youremail@gmail.com"
 EMAIL_PASSWORD = "your_app_password"
